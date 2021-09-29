@@ -1,34 +1,48 @@
 package java8;
 
 import java.util.Comparator;
+import java.util.function.Function;
 
 public class LambdaExample {
 
 	public static void main(String[] args) {
 
-		// comparing 2 strings without lambda
 
-		Comparator<String> anonymous = new Comparator<String>() {
-			@Override
-			public int compare(String o1, String o2) {
-				// TODO Auto-generated method stub
-				return o1.compareTo(o2);
-			}
+		/**
+		 * What are Lambdas : They are expressions which define implementations of
+		 * functional interface methods
+		 *
+		 * so basically it defines what we can do  - declarative programming
+		 *
+		 *
+		 * Declarative programming - How to do a thing? - with steps
+		 * Imperative programming- What things are ? - what a function does
+		 */
+
+
+		/**
+		 * Here we have defined what the lambda does - to add 2 variables
+		 */
+		TestingLambda add = (x ,y)-> {
+			System.out.println(x+y);
 		};
 
-		int val = anonymous.compare("String1", "String2");
 
-		System.out.println(val);
-		
-		//Comparing with lambda
-		
-		Comparator<String> lambda = (a,b)->{return a.compareTo(b);};
-		lambda.compare("String1", "String2");
-		
-		//In case of a single statement {} can be excluded and return as well
-		
-		Comparator<String> lambda1 = (a,b)-> a.compareTo(b);
-		lambda1.compare("String1", "String2");
+		add.doSomething(10,15);
+
+		// Function<T,R> is a functional interface in java 8 ,takes an argument and returns a value
+		Function<Integer, String> myFunction =(x) -> "Number is  :"+x;
+		String str = myFunction.apply(27);
+		System.out.println(str);
+
+	}
+
+
+
+	@FunctionalInterface
+	interface TestingLambda{
+
+		void doSomething(int x , int y);
 	}
 
 }
