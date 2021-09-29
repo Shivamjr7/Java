@@ -15,8 +15,8 @@ public class LambdaExample {
 		 * so basically it defines what we can do  - declarative programming
 		 *
 		 *
-		 * Declarative programming - How to do a thing? - with steps
-		 * Imperative programming- What things are ? - what a function does
+		 * Imperative programming - How to do a thing? - with steps
+		 * Declarative programming- What things are ? - what a function does
 		 */
 
 
