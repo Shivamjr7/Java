@@ -3,7 +3,15 @@ package basics;
 public class ClassCastExceptionExample {
 
 	public static void main(String[] args) {
-		
+
+
+		/**
+		 * This will not throw
+		 */
+
+		Base b = new Derived();
+		Derived d1 = (Derived) b;
+		d1.hello();
 
 		
 		/**
@@ -15,13 +23,7 @@ public class ClassCastExceptionExample {
 		d.hello();
 		
 		
-		/**
-		 * This will not throw
-		 */
-		
-		Base b = new Derived();
-		Derived d1 = (Derived) b;
-		d1.hello();
+
 		
 	}
 
@@ -40,5 +42,8 @@ class Base
 
 class Derived extends Base
 {
-	
+	void  hello()
+	{
+		System.out.println("Derived class called ...");
+	}
 }
