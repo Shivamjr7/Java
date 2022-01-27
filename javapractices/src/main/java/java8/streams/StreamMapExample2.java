@@ -9,8 +9,7 @@ public class StreamMapExample2 {
 		
 		
 		List<String> list = Arrays.asList("Park Ji Sung","Harry Kane","Rashford");
-		
-		
+
 		list.stream()
 		.map(x-> x.toLowerCase())
 		.filter(x-> x.startsWith("r"))
