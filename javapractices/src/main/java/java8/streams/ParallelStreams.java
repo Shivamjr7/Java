@@ -1,12 +1,11 @@
-package streams;
+package java8.streams;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 import java.util.stream.Collectors;
 
 /**
- *  using parallel streams operate on the data in parallel
+ *  using parallel java8.streams operate on the data in parallel
  *  threads
  */
 public class ParallelStreams {
