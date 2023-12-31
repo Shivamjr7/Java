@@ -9,7 +9,7 @@ public class ObserverExample {
 
     public static void main(String[] args) {
 
-        //Observer emits data , so is the source of data
+        //Observable emits data , so is the source of data
         Observable<String> observable = Observable.just("A","B","C");
 
         //observer subscribes to the observable and receives the data

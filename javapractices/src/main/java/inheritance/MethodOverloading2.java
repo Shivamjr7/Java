@@ -15,10 +15,12 @@ public class MethodOverloading2 {
 	{
 			
 	}
+
+
 	
-	void hello(StringBuffer a)
-	{
-		
-	}
+//	void hello(StringBuffer a)
+//	{
+//
+//	}
 
 }

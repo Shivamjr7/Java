@@ -1,0 +1,28 @@
+calExpr={
+  "m_response_status": ."onboarding.RiskRuds".response.status,
+  "m_correlation_id": ."onboarding.RiskRuds".response.headers.CORRELATION-ID,
+  "m_application_id": .Input.application_id,
+  "m_country_code": .Input.onboarding_context.dimension.country_code,
+  "m_intents": string(.Input.onboarding_context.dimension.intents),
+  "m_invocation_phase":.Input.onboarding_context.invocation_context.invocation_phase,
+  "m_client": .Input.onboarding_context.invocation_context.client_name,
+  "m_account_number_1": .Input.accounts[0].account_info.account_number,
+  "m_account_number_2": .Input.accounts[0].account_info.account_number,
+  "m_account_count": size(.Input.accounts),
+  "m_party_id_1": .Input.parties[0].party_information.party_id,
+  "m_party_type_1": .Input.parties[0].party_information.party_type,
+  "m_party_email_1": .Input.parties[0].party_information.primary_email_address,
+  "m_party_id_2": .Input.parties[1].party_information.party_id,
+  "m_party_type_2": .Input.parties[1].party_information.party_type,
+  "m_party_email_2": .Input.parties[1].party_information.primary_email_address,
+  "m_party_add_type_1": string(.Input.parties[0].party_information.party_address.type),
+  "m_party_add_id_1": .Input.parties[0].party_information.party_address.address_id,
+  "m_party_add_type_2": string(.Input.parties[1].party_information.party_address.type),
+  "m_party_add_id_2": .Input.parties[1].party_information.party_address.address_id,
+  "m_party_count": size(.Input.parties),
+  "m_risk_decision_1": ."onboarding.RiskRuds".response.responseBody.risk_decisions.decisions[0].decision_code,
+  "m_risk_decision_2":."onboarding.RiskRuds".response.responseBody.risk_decisions.decisions[1].decision_code
+  }&
+signalFxExpr={
+"m_risk_decision_2":."onboarding.RiskRuds".response.responseBody.risk_decisions.decisions[1].decision_code
+ }

@@ -5,7 +5,7 @@ public class MethodOverloadingAmbiguity {
 	public static void main(String[] args) {
 		
 		
-		
+		//String will be called as it is down in heirarchy
 		new MethodOverloadingAmbiguity().hello(null);
 
 	}

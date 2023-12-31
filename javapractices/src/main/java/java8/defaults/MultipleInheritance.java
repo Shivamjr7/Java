@@ -4,6 +4,9 @@ public class MultipleInheritance  implements  A , B{
 
     public static void main(String[] args) {
 
+        MultipleInheritance obj = new MultipleInheritance();
+        obj.helloworld();
+
     }
 
     @Override
@@ -18,11 +21,18 @@ interface A{
     {
         System.out.println("Hello world from : "+ A.class);
     }
+    static void staticMethod(){
+        System.out.println("interface A static method");
+    }
 }
 
 interface B{
     default  void helloworld()
     {
         System.out.println("Hello world from :"+ B.class);
+    }
+
+    static void staticMethod(){
+        System.out.println("interface A static method");
     }
 }

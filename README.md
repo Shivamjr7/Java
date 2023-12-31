@@ -3,6 +3,8 @@
 
 JDK: For development JRE:  For running java app JVM : Where byte code is run 
 
+** ** 
+
 ## How JVM works : 
 
 * JVM is a part of JRE 
@@ -22,6 +24,7 @@ JDK: For development JRE:  For running java app JVM : Where byte code is run
 * Stack frame has local variable array(each slot is of 4 bytes) , operand stack(rough work area for JVM) and frame data (symbolic ref)
 * Frame data also contains ref to the Exception table which provides the catch block info
  
+** ** 
 
 ## Object Oriented Programming in Java
 * Java is not purely object oriented because it contains primitive data types as well
@@ -62,6 +65,7 @@ JDK: For development JRE:  For running java app JVM : Where byte code is run
         * Nested interface is by default static . They are used only if you want to access it through top level class or interface 
 * Polymorphism : Object can be represented in many forms 
     * Static and dynamic(run time)  
+** ** 
 
 ## Basics : 
 * Everything in java is treated as objects , Object is the super class of all classes except for interfaces
@@ -94,6 +98,8 @@ JDK: For development JRE:  For running java app JVM : Where byte code is run
 * A reference is like a remote control to an object. The remote control has more or fewer buttons depending on its type, and the object itself is stored in a heap. When we do casting, we change the type of the remote control but don’t change the object itself. Upcasting we have less buttons and down casting more.
 * Path separator in classpath for windows is semicolon and in unix is colon
 
+** ** 
+
 ## Wrapper Classes:
 
 * To convert data types to object . Most collections work on objects so Wrapper class is required 
@@ -102,7 +108,7 @@ JDK: For development JRE:  For running java app JVM : Where byte code is run
 * Each wrapper class stores a list of commonly used instances of its own type in form of cache . Caching is only available when we use valueOf or direct assignment and not in case of new keyword
 * Wrapper class implement object pooling to cache values(Integer cache value from -128 to 127 , character from 0 to 127)
 
-
+** ** 
 
 ## Garbage Collection 
 * Objects are stored in heap memory of Java , static members are stored in method area 
@@ -130,6 +136,7 @@ JDK: For development JRE:  For running java app JVM : Where byte code is run
 * -XX:+UseConcMarkSweepGC: enables concurrent collector. This is only for old gc 
 * -XX:+UseG1GC: Use G1
 
+** ** 
 
 ## Memory Management:
 * Memory leak : In general, a Java memory leak happens when an application unintentionally (due to logical errors in code) holds on to object references that are no longer required
@@ -142,6 +149,7 @@ JDK: For development JRE:  For running java app JVM : Where byte code is run
 * For Java 1.6 and below : If we read a huge massive String object, and call intern() on that object, then it goes to the string pool, which is located in PermGen (permanent memory) and will stay there as long as our application runs.
 * Use Threadlocal.remove() else thread local will stay in thread pool 
 
+** ** 
 
 ## Network Programming in Java
 
@@ -153,6 +161,8 @@ JDK: For development JRE:  For running java app JVM : Where byte code is run
 * So using networking we can connect client and server and can use IO/NIO for communicating 
 * Only one incoming connection is opened for each call to the  ServerSocket accept() method.
 * The InetAddress is Java's representation of an IP address
+
+** ** 
 
 ## Java IO 
 
@@ -170,7 +180,10 @@ JDK: For development JRE:  For running java app JVM : Where byte code is run
 * Reading an array of bytes at a time is faster than reading a single byte at a time from a Java InputStream.
 * Scanner class can read formatted input from console(System.in) (can read int , char 
 
-Java NIO (New Java IO) (to read and write in non blocking way)
+** ** 
+
+## Java NIO (New Java IO) 
+### (to read and write in non blocking way)
 
 
 * NIOs main components : Channels , Buffers and Selectors 
@@ -189,6 +202,8 @@ Java NIO (New Java IO) (to read and write in non blocking way)
 * MappedByteBuffer : maps a file to memory . Creates a buffer in main memory of JVM
 * To convert ByteBuffer to CharBuffer we need to use char set. This uses decoder and encoder. To decode bytes to char we need charsets
 
+** ** 
+
 ## Java NIO2
 
 * Provides access to the file system directly
@@ -199,6 +214,7 @@ Java NIO (New Java IO) (to read and write in non blocking way)
 * A directory stream is a way of analysing the content of a directory .It can get all the content and filter the content 
 * JDK follows DFS to look for dir and sub dirs. Files.walk to do dfs in a directory path. Can also give max depth to be traversed
 
+** ** 
 
 ## Exceptions 
 
@@ -223,6 +239,7 @@ Java NIO (New Java IO) (to read and write in non blocking way)
     * Use template for repeated try/catch
     * Avoid empty catch blocks 
 
+** ** 
 
 ## Multithreading  and Async Programming
 * Parallelism is doing multiple things at the same time. Dividing a single task to multiple subtasks and then doing each task sequentially in a cpu core. Fork and Join. Needs multiple cores to do parallelism
@@ -292,6 +309,7 @@ Java NIO (New Java IO) (to read and write in non blocking way)
 * Phaser : combination of cyclic barrier and countdown latch. Can be used as both cyclic barrier and countdown latch
 * Striped locks : striped locks is a concept where you want to have a lock for a group of items
 
+** ** 
 
 ## RxJava (for Reactive specification : https://github.com/ReactiveX/RxJava/wiki)
     * Reactive programming follows a push approach rather than a pull approach : We don’t need to retrieve data , observable takes care of that
@@ -306,6 +324,7 @@ Java NIO (New Java IO) (to read and write in non blocking way)
     * subscribeOn : This only influences the thread that is used when the Observable is subscribed to and it will stay on it downstream.
 
 
+** ** 
 
 ## Functional Programming :
 

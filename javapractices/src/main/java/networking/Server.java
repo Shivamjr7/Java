@@ -17,10 +17,8 @@ public class Server {
     {
         try {
 
-             serverSocket = serverSocket = new ServerSocket(port) ;
+             serverSocket  = new ServerSocket(port) ;
              socket = serverSocket.accept();
-
-
              in = new DataInputStream( new BufferedInputStream(socket.getInputStream()));
 
              String line  ="";

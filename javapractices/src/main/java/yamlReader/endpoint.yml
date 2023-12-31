@@ -1,0 +1,1336 @@
+endpoints:
+  - name: nova_prd_v2
+    methodType: POST
+    uri: /v1/risk/payment-review-decisions
+    requestObj: com.paypal.api.platform.risk.transactiondecisions.api.model.PaymentReviewDecisionRequest
+    responseObj: com.paypal.api.platform.risk.transactiondecisions.api.model.PaymentReviewDecisionResponse
+    contentType: application/json
+    workflow: |
+      digraph Diagraph {
+              Start -> { RUPSv2SubDiagraph RuDTSv2SubDiagraph ComplianceOnlySubDiagraph SkipRiskDecisionsV2SubDiagraph }
+              RUPSv2SubDiagraph -> { End }
+              RuDTSv2SubDiagraph -> { End }
+              ComplianceOnlySubDiagraph -> { End }
+              SkipRiskDecisionsV2SubDiagraph -> { End }
+              RUPSv2SubDiagraph              [ConditionExpression = "conditions.isTokenizationOrPosV2.evaluate(context) == false && conditions.isComplianceInitiatedCapture.evaluate(context) == false && conditions.isForcePlanValue.evaluate(context) == false"]
+              ComplianceOnlySubDiagraph      [ConditionExpression = "conditions.isTokenizationOrPosV2.evaluate(context) == false && conditions.isComplianceInitiatedCapture.evaluate(context) == false && conditions.isForcePlanValue.evaluate(context) == true"]
+              SkipRiskDecisionsV2SubDiagraph [ConditionExpression = "conditions.isTokenizationOrPosV2.evaluate(context) == false && conditions.isComplianceInitiatedCapture.evaluate(context) == true"]
+              RuDTSv2SubDiagraph [ConditionExpression = "conditions.isTokenizationOrPosV2.evaluate(context) == true"]
+          }
+    subFlows:
+      - name: RUPSv2SubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV2ToLimitsV2PayloadConverter NovaV2ToRiskV2HeaderPayloadManipulator NovaV2ToComplianceV2HeaderPayloadManipulator StandIn NovaV2ToSimilityPayloadConverter}
+                  NovaV2ToLimitsV2PayloadConverter -> { Limits }
+                  NovaV2ToRiskV2HeaderPayloadManipulator -> { Rups }
+                  NovaV2ToComplianceV2HeaderPayloadManipulator -> { CPLDSRamp }
+                  NovaV2ToComplianceV2HeaderPayloadManipulator -> { Compliance }
+                  Rups -> { NovaV2Consolidator NovaV2YamPublisherBRE NovaV2YamPublisherPA }
+                  Limits -> { NovaV2Consolidator }
+                  CPLDSRamp -> { NovaV2Consolidator }
+                  Compliance -> { NovaV2Consolidator }
+                  StandIn -> {NovaV2Consolidator}
+                  NovaV2ToSimilityPayloadConverter -> Simility -> SimilityResponseTransformer -> NovaV2Consolidator
+                  NovaV2Consolidator -> { BizLogging NovaV2PaymentAttemptMessagePublisher UnifiedLogging SimilityV2PostActionHandler FPTIBizLogging}
+                  NovaV2PaymentAttemptMessagePublisher -> KafkaInfra
+                  SimilityV2PostActionHandler -> Kafka
+                  NovaV2Consolidator -> { End }
+                  End -> {UnifiedLogging}
+                  NovaV2ToLimitsV2PayloadConverter [ConditionExpression = "conditions.isForcePlanValue.evaluate(context) != true"]
+                  NovaV2ToRiskV2HeaderPayloadManipulator [ConditionExpression = "conditions.isForcePlanValue.evaluate(context) != true"]
+                  Rups[ref="riskunifiedpaymentserv.evaluate_risk_v2" ]
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions_v2" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref="compplanningdecserv.evaluate_planning_decisions_v2" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  Limits[ref = "limitsdecisionserv.limits_transaction_decisions" ]
+                  StandIn[ref="riskunifiedstandinserv.v2_payment_review_standin_decision" ConditionExpression="conditions.v2_stand_in.risk.evaluate(context) == true"]
+                  NovaV2Consolidator[inputs = "Start|Rups|Limits|CPLDSRamp|Compliance|StandIn|SimilityResponseTransformer|Simility"]
+                  BizLogging[format = "json" inputs = "Start|NovaV2Consolidator"]
+                  FPTIBizLogging[dataProvider = "com.paypal.risk.gateway.endpoint.nova.v2.consolidator.NovaV2FPTIBizLogData" inputs = "Start|StandIn|CPLDSRamp|Compliance|Limits|Rups|Simility"]
+                  NovaV2YamPublisherBRE[inputs = "Rups|StandIn" ConditionExpression = "conditions.isShadow.evaluate(context) == false"]
+                  NovaV2YamPublisherPA[inputs = "Rups|StandIn" ConditionExpression = "conditions.isShadow.evaluate(context) == false"]
+                  NovaV2PaymentAttemptMessagePublisher[inputs = "Start|Rups|Limits|CPLDSRamp|Compliance|StandIn|NovaV2Consolidator" ConditionExpression = "conditions.isShadow.evaluate(context) == false"]
+                  UnifiedLogging[exprFile = "logExprV2.txt"]
+                  NovaV2ToSimilityPayloadConverter[ConditionExpression ="conditions.isFraudProtectionFlowEnabled.evaluate(context) == true"]
+                  Simility[ref = "risksimdecisionserv.fraud-evaluate"]
+                  SimilityResponseTransformer[inputs ="Start|Simility" ConditionExpression = "conditions.isV2SimilityResultAvailable.evaluate(context) == true"]
+                  SimilityV2PostActionHandler [inputs = "Start|Simility|NovaV2Consolidator" ConditionExpression = "conditions.isV2SimilityResultAvailable.evaluate(context) == true"]
+                  Kafka [channel="kafkaPublisherRisk" isHeaderEnabled="false" topicName="risk.raas.simdecisionevent"]
+                  KafkaInfra [ConditionExpression = "conditions.isNovaV2PaymentAttemptMessagePublisherAvailable.evaluate(context) == true" channel="kafkaPublisherInfra" topicName="lar.PlanPaymentAttemptSummaryMessage.1"]
+              }
+
+      - name: RuDTSv2SubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV2ToLimitsV2PayloadConverter NovaV2ToRuDTSV2HeaderPayloadManipulator NovaV2ToComplianceV2HeaderPayloadManipulator }                    
+                  NovaV2ToLimitsV2PayloadConverter -> { Limits }
+                  NovaV2ToRuDTSV2HeaderPayloadManipulator -> { RuDTS }
+                  NovaV2ToComplianceV2HeaderPayloadManipulator -> { CPLDSRamp }
+                  NovaV2ToComplianceV2HeaderPayloadManipulator -> { Compliance }
+                  RuDTS -> { NovaV2TokenizationConsolidator NovaV2TokenizationYamPublisherBRE NovaV2TokenizationYamPublisherPA }
+                  Limits -> { NovaV2TokenizationConsolidator }
+                  CPLDSRamp -> { NovaV2TokenizationConsolidator }
+                  Compliance -> { NovaV2TokenizationConsolidator }
+                  NovaV2TokenizationConsolidator -> { BizLogging NovaV2TokenizationPaymentAttemptMessagePublisher UnifiedLogging}
+                  NovaV2TokenizationPaymentAttemptMessagePublisher -> KafkaInfra
+                  NovaV2TokenizationConsolidator -> { End }
+                  End -> {UnifiedLogging}
+                  RuDTS[ref="riskudstransactionserv.evaluate_risk_v2" ]
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions_v2" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions_v2" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  Limits[ref = "limitsdecisionserv.limits_transaction_decisions" ]
+                  NovaV2TokenizationConsolidator[inputs = "Start|RuDTS|Limits|CPLDSRamp|Compliance"]
+                  BizLogging[format = "json" inputs = "Start|NovaV2TokenizationConsolidator"]
+                  NovaV2TokenizationYamPublisherBRE[inputs = "RuDTS" ConditionExpression = "conditions.isShadow.evaluate(context) == false"]
+                  NovaV2TokenizationYamPublisherPA[inputs = "RuDTS" ConditionExpression = "conditions.isShadow.evaluate(context) == false"]
+                  NovaV2TokenizationPaymentAttemptMessagePublisher[inputs = "Start|RuDTS|Limits|CPLDSRamp|Compliance|NovaV2TokenizationConsolidator" ConditionExpression = "conditions.isShadow.evaluate(context) == false"]
+                  UnifiedLogging[exprFile = "logExprV2.txt"]
+                  NovaV2ToSimilityPayloadConverter[ConditionExpression ="conditions.isFraudProtectionFlowEnabled.evaluate(context) == true"]
+                  Simility[ref = "risksimdecisionserv.fraud-evaluate"]
+                  SimilityResponseTransformer[inputs ="Start|Simility" ConditionExpression = "conditions.isV2SimilityResultAvailable.evaluate(context) == true"]
+                  SimilityV2PostActionHandler [inputs = "Start|Simility|NovaV2Consolidator" ConditionExpression = "conditions.isV2SimilityResultAvailable.evaluate(context) == true"]
+                  Kafka [channel="kafkaPublisherRisk" isHeaderEnabled="false" topicName="risk.raas.simdecisionevent"]
+                  KafkaInfra [ConditionExpression = "conditions.isNovaV2TokenizationPaymentAttemptMessagePublishertAvailable.evaluate(context) == true" channel="kafkaPublisherInfra" topicName="lar.PlanPaymentAttemptSummaryMessage.1"]
+              }
+
+      - name: ComplianceOnlySubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV2ToComplianceV2HeaderPayloadManipulator }
+                  NovaV2ToComplianceV2HeaderPayloadManipulator -> { CPLDSRamp }
+                  NovaV2ToComplianceV2HeaderPayloadManipulator -> { Compliance }
+                  CPLDSRamp -> { NovaV2Consolidator }
+                  Compliance -> { NovaV2Consolidator }
+                  NovaV2Consolidator -> { BizLogging UnifiedLogging }
+                  NovaV2Consolidator -> { End }
+                  End -> {UnifiedLogging}
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions_v2" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions_v2" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  BizLogging[format = "json" inputs = "Start|NovaV2Consolidator"]
+                  NovaV2Consolidator [inputs = "Start|CPLDSRamp|Compliance"]
+                  UnifiedLogging[exprFile = "logExprV2.txt"]
+              }
+
+      - name: SkipRiskDecisionsV2SubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV2ToComplianceV2HeaderPayloadManipulator NovaV2ToLimitsV2PayloadConverter }
+                  NovaV2ToComplianceV2HeaderPayloadManipulator -> { CPLDSRamp }
+                  NovaV2ToComplianceV2HeaderPayloadManipulator -> { Compliance }
+                  NovaV2ToLimitsV2PayloadConverter -> { Limits }
+                  CPLDSRamp -> { NovaV2Consolidator }
+                  Compliance -> { NovaV2Consolidator }
+                  Limits -> { NovaV2Consolidator }
+                  NovaV2Consolidator -> { BizLogging UnifiedLogging }
+                  NovaV2Consolidator -> { End }
+                  End -> {UnifiedLogging}
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions_v2" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions_v2" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  Limits[ref = "limitsdecisionserv.limits_transaction_decisions" ]
+                  NovaV2Consolidator[inputs = "Start|Limits|CPLDSRamp|Compliance"]
+                  BizLogging[format = "json" inputs = "Start|NovaV2Consolidator"]
+                  UnifiedLogging[exprFile = "logExprV2.txt"]
+              }
+    workflowLogger:
+      nodes: [Rups, StandIn, RuDTS]
+      classes: [com.paypal.risk.gateway.endpoint.nova.v2.util.NovaV2UnifiedLoggerHelper]
+    conditions:
+      - name : isShadow
+        condition : "new(\"com.paypal.risk.gateway.endpoint.nova.v2.util.NovaV2ExecutionHelper\").isShadow(context.getInput().invocationContext)"
+
+      - name : isForcePlanValue
+        condition : "new(\"com.paypal.risk.gateway.endpoint.nova.v2.util.NovaV2ExecutionHelper\").isForcePlanValue(context,context.getInput().invocationContext) "
+
+      - name: isV2SimilityResultAvailable
+        condition : "context!= null &&
+                                context.getNodeState('Simility')!= null &&
+                                context.getNodeState('Simility').getOutput() != null"
+
+      - name: isFraudProtectionFlowEnabled
+        clazz : com.paypal.risk.gateway.endpoint.nova.v2.converter.simility.FraudProtectionCondition
+
+      - name: v2_stand_in
+        type: throttle
+        condition : "context.getInput() != null"
+        groups:
+          - name: risk
+            field: "if(context.getInput().participants!=null && context.getInput().participants.senderAccountNumber!=null) {return context.getInput().participants.senderAccountNumber} else{return null}"
+            percentage: 'conditions.v2_stand_in.risk.percentage'
+      - name: isTokenizationOrPosV2
+        clazz : com.paypal.risk.gateway.endpoint.nova.condition.tokenization.TokenizationPosV2Conditions
+
+      - name: isComplianceInitiatedCapture
+        condition : "context!=null && context.getInput()!= null
+                      && context.getInput().transactionContext != null && context.getInput().transactionContext.paymentProductIdentifiers != null
+                      && context.getInput().transactionContext.paymentProductIdentifiers.PaymentIntent != null && 'CAPTURE' == context.getInput().transactionContext.paymentProductIdentifiers.PaymentIntent
+                      && context.getInput().clientConfiguration != null
+                      && context.getInput().clientConfiguration.productCode != null && 'COMPLIANCE_REVIEW_WORKFLOW' == context.getInput().clientConfiguration.productCode
+                      && context.getInput().clientConfiguration.productFeature != null && 'SECURE_FUNDS' == context.getInput().clientConfiguration.productFeature"
+
+
+      - name: isNovaV2TokenizationPaymentAttemptMessagePublishertAvailable
+        condition : "context != null &&
+                      context.getNodeState('NovaV2TokenizationPaymentAttemptMessagePublisher') != null &&
+                      context.getNodeState('NovaV2TokenizationPaymentAttemptMessagePublisher').getOutput() != null"
+
+      - name: isNovaV2PaymentAttemptMessagePublisherAvailable
+        condition : "context != null &&
+                      context.getNodeState('NovaV2PaymentAttemptMessagePublisher') != null &&
+                      context.getNodeState('NovaV2PaymentAttemptMessagePublisher').getOutput() != null"
+
+      - name: CPLDSRamp
+        type: throttle
+        condition: "context!=null && context.getInput() != null"
+        groups:
+          - name: CPLDS_flow
+            field: "if(context.getInput().participants!=null && context.getInput().participants.senderAccountNumber!=null) {return context.getInput().participants.senderAccountNumber} else{return null}"
+            percentage: 'conditions.CPLDSRamp.CPLDS_flow.percentage'
+
+  - name: nova
+    useCaseRetriever:
+      clazz: com.paypal.risk.gateway.endpoint.nova.usecase.PlanningUseCaseRetriever
+      validUseCaseNames:
+        - DG
+        - UCC
+        - PPH
+        - BA_CREATION
+        - BA_HEADLESS
+        - EC_HEADLESS
+        - RECURRING_PAYMENTS
+        - REFERENCE_TRANSACTION
+        - EC
+        - RECURRING_PAYMENTS_WITH_PURCHASE
+        - REFERENCE_TRANSACTION_WITH_PURCHASE
+        - POS
+        - PROX
+        - PAYOUTS
+        - PPWC
+        - SEND_MONEY
+        - TOKENIZATION
+        - WPS
+        - NOVA
+    methodType: POST
+    uri: /v1/riskunifiedgatewayserv/planning/payment_review_decision
+    requestObj: com.paypal.api.platform.risk.transactiondecisions.api.PaymentReviewDecisionRequest
+    responseObj: com.paypal.api.platform.risk.transactiondecisions.api.PaymentReviewDecisionResponse
+    contentType: application/json
+    workflow: |
+      digraph Diagraph {
+              Start -> { DCCSubDiagraph repaymentsSubDiagraph depositSubDiagraph cashoutSubDiagraph editBASubDiagraph tokenizationPOSSubDiagraph forcePlanGenerationSubDiagraph novaSubDiagraph remittanceSubDiagraph sandBoxSubDiagraph }
+              DCCSubDiagraph -> { End }
+              repaymentsSubDiagraph -> { End }
+              depositSubDiagraph -> { End }
+              cashoutSubDiagraph -> { End }
+              editBASubDiagraph -> { End }
+              tokenizationPOSSubDiagraph -> { End }
+              forcePlanGenerationSubDiagraph -> { End }
+              novaSubDiagraph -> { End }
+              remittanceSubDiagraph -> { End }
+              sandBoxSubDiagraph -> { End }
+              DCCSubDiagraph [ConditionExpression = "conditions.isForcePlanGeneration.evaluate(context) == false && conditions.RepaymentTraffic.ramp.evaluate(context) == false && conditions.isEditBA.evaluate(context) == false && conditions.isDCC.evaluate(context) == true && conditions.tokenizationOrPosV1.evaluate(context) == false && conditions.Nova2RiskSB.SB_flow.evaluate(context) == false"]
+              repaymentsSubDiagraph [ConditionExpression = "conditions.RepaymentTraffic.ramp.evaluate(context) == true"]
+              depositSubDiagraph [ConditionExpression = "conditions.isForcePlanGeneration.evaluate(context) == false && conditions.RepaymentTraffic.ramp.evaluate(context) == false && conditions.isEditBA.evaluate(context) == false && conditions.isDepositFlow.evaluate(context) == true && conditions.isDCC.evaluate(context) == false && conditions.tokenizationOrPosV1.evaluate(context) == false && conditions.Nova2RiskSB.SB_flow.evaluate(context) == false"]
+              cashoutSubDiagraph [ConditionExpression = "conditions.isForcePlanGeneration.evaluate(context) == false && conditions.RepaymentTraffic.ramp.evaluate(context) == false && conditions.isEditBA.evaluate(context) == false && conditions.isCashout.evaluate(context) == true && conditions.isDCC.evaluate(context) == false && conditions.Nova2RiskSB.SB_flow.evaluate(context) == false"]
+              editBASubDiagraph [ConditionExpression = "conditions.isEditBA.evaluate(context) == true && conditions.RepaymentTraffic.ramp.evaluate(context) == false && conditions.isDCC.evaluate(context) == false && conditions.isDepositFlow.evaluate(context) == false && conditions.tokenizationOrPosV1.evaluate(context) == false && conditions.isCashout.evaluate(context) == false && conditions.Nova2RiskSB.SB_flow.evaluate(context) == false"]
+              tokenizationPOSSubDiagraph [ConditionExpression = "conditions.tokenizationOrPosV1.evaluate(context) == true && conditions.isForcePlanGeneration.evaluate(context) == false && conditions.RepaymentTraffic.ramp.evaluate(context) == false  && conditions.isEditBA.evaluate(context) == false && conditions.isDCC.evaluate(context) == false && conditions.isDepositFlow.evaluate(context) == false && conditions.isCashout.evaluate(context) == false && conditions.Nova2RiskSB.SB_flow.evaluate(context) == false"]
+              forcePlanGenerationSubDiagraph [ConditionExpression = "conditions.isForcePlanGeneration.evaluate(context) == true && conditions.RepaymentTraffic.ramp.evaluate(context) == false && conditions.tokenizationOrPosV1.evaluate(context) == false && conditions.isEditBA.evaluate(context) == false && conditions.isDCC.evaluate(context) == false && conditions.isDepositFlow.evaluate(context) == false && conditions.isCashout.evaluate(context) == false && conditions.Nova2RiskSB.SB_flow.evaluate(context) == false"]
+              novaSubDiagraph [ConditionExpression = "conditions.isRemittanceFlow.evaluate(context) == false && conditions.isForcePlanGeneration.evaluate(context) == false && conditions.RepaymentTraffic.ramp.evaluate(context) == false && conditions.tokenizationOrPosV1.evaluate(context) == false && conditions.isEditBA.evaluate(context) == false && conditions.isDCC.evaluate(context) == false && conditions.isDepositFlow.evaluate(context) == false && conditions.tokenizationOrPosV1.evaluate(context) == false && conditions.isCashout.evaluate(context) == false && conditions.Nova2RiskSB.SB_flow.evaluate(context) == false || conditions.isVenmoInstorePayments.evaluate(context) == true"]
+              remittanceSubDiagraph [ConditionExpression = "conditions.isRemittanceFlow.evaluate(context) == true && conditions.isForcePlanGeneration.evaluate(context) == false && conditions.RepaymentTraffic.ramp.evaluate(context) == false && conditions.tokenizationOrPosV1.evaluate(context) == false && conditions.isEditBA.evaluate(context) == false && conditions.isDCC.evaluate(context) == false && conditions.isDepositFlow.evaluate(context) == false && conditions.isCashout.evaluate(context) == false && conditions.Nova2RiskSB.SB_flow.evaluate(context) == false"]
+              sandBoxSubDiagraph [ConditionExpression = "conditions.Nova2RiskSB.SB_flow.evaluate(context) == true"]
+          }
+    subFlows:
+      - name: DCCSubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV1ToComplianceV1HeaderPayloadManipulator NovaV1ToLimitsV1HeaderPayloadManipulator Nova2RiskDCC NovaDCCConsolidator Nova2Simility H2RRiskDCCShadow H2RRiskPPHRevShadow StandIn NovaV1ToRiskV1HeaderPayloadManipulator }
+                  NovaV1ToComplianceV1HeaderPayloadManipulator -> { Nova2Compliance }
+                  NovaV1ToLimitsV1HeaderPayloadManipulator -> { Nova2Limit }
+                  Nova2Compliance -> { CPLDSRamp }
+                  Nova2Compliance -> { Compliance }
+                  Nova2Limit -> { Limits }
+                  H2RRiskPPHRevShadow -> { RiskPPHRevShadow }
+                  Nova2RiskDCC -> { RiskRaptorDCC }
+                  Nova2Simility -> { Simility }
+                  RiskRaptorDCC -> { NovaDCCConsolidator RiskAssessmentLifecycleHandlerProcessor}
+                  CPLDSRamp -> { NovaDCCConsolidator }
+                  Compliance -> { NovaDCCConsolidator }
+                  Limits -> { NovaDCCConsolidator }
+                  Simility -> { NovaDCCConsolidator }
+                  StandIn -> { NovaDCCConsolidator }
+                  RiskAssessmentLifecycleHandlerProcessor -> { RiskAssessmentLifecycleServ }
+                  RiskAssessmentLifecycleServ -> { RiskAssessmentLifecycleHandlerTransformer }
+                  NovaV1ToRiskV1HeaderPayloadManipulator -> { Nova2RupsAuditTransform RUPSUCCRamp RUPSPPHRamp }
+                  RUPSUCCRamp -> { NovaDCCConsolidator YamPublisherBRE YamPublisherPA RiskAssessmentLifecycleHandlerProcessor }
+                  RUPSPPHRamp -> { NovaDCCConsolidator YamPublisherBRE YamPublisherPA RiskAssessmentLifecycleHandlerProcessor }
+                  Nova2RupsAuditTransform -> { RupsAudit }
+                  RupsAudit -> { RupsCalPublisher }
+                  End -> {UnifiedLogging}
+                  NovaDCCConsolidator -> { BizLogging SimilityPostActionHandler FPTIBizLogging }
+                  NovaDCCConsolidator -> { End }
+                  SimilityPostActionHandler -> { Kafka }
+                  RiskRaptorDCC[ref="riskasfgatewayserv.review_payment_direct_card"]
+                  RUPSUCCRamp[ref="riskunifiedpaymentserv.evaluate_risk" ConditionExpression = "conditions.RUPSUCCRamp.UCC_flow.evaluate(context) == true"]
+                  RUPSPPHRamp[ref="riskunifiedpaymentserv.evaluate_risk" ConditionExpression = "conditions.RUPSPPHRamp.PPH_flow.evaluate(context) == true"]
+                  H2RRiskPPHRevShadow[ConditionExpression = "conditions.RUPSPPHRamp.PPH_flow.evaluate(context) == true && conditions.RUPSPPHRamp.PPH_rev_shadow.evaluate(context) == true"]
+                  RiskPPHRevShadow[ref="riskasfgatewayserv.review_payment_direct_card" ConditionExpression = "conditions.isPPH.evaluate(context) == true"]
+                  Nova2RiskDCC[ConditionExpression = "conditions.RUPSUCCRamp.UCC_flow.evaluate(context) == false && conditions.RUPSPPHRamp.PPH_flow.evaluate(context) == false"]
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  Limits[ref = "limitsdecisionserv.transaction_decisions"]
+                  StandIn[ref="riskunifiedstandinserv.payment_review_standin_decision" ConditionExpression="conditions.isDCCAndNotPPH.evaluate(context) == false"]
+                  BizLogging[format = "json" inputs = "Start|NovaDCCConsolidator"]
+                  FPTIBizLogging[dataProvider = "com.paypal.risk.gateway.endpoint.nova.consolidator.NovaFPTIBizLogData" inputs = "Start|NovaDCCConsolidator|RUPSUCCRamp|RUPSPPHRamp|RiskRaptorDCC|CPLDSRamp|Compliance|StandIn|Simility"]
+                  H2RRiskDCCShadow[ConditionExpression="conditions.H2RShadowByAmount.evaluate(context) == true && conditions.isDCC.evaluate(context) == true"]
+                  Nova2Limit [ConditionExpression = "conditions.isMillenniumBACreateWithPurchase.evaluate(context) != true && conditions.isMillenniumBAWithoutPurchase.evaluate(context) != true && conditions.isDoECNonOrder.evaluate(context) == false"]
+                  UnifiedLogging [exprFile = "logExpr.txt"]
+                  Nova2RupsAuditTransform[ConditionExpression= "conditions.isShadowTxn.evaluate(context) == false && conditions.isPPH.evaluate(context) == true && conditions.RUPSPPHRamp.PPH_flow.evaluate(context) == false && conditions.RUPSPPHRamp.PPH_rev_shadow.evaluate(context) == false && conditions.RUPSAudit.PPH_flow.evaluate(context) == true"]
+                  RupsAudit[ref="riskunifiedpaymentserv.evaluate_risk"]
+                  YamPublisherBRE[ConditionExpression= "conditions.isAuditShadow.evaluate(context) == false"]
+                  YamPublisherPA[ConditionExpression= "conditions.isAuditShadow.evaluate(context) == false"]
+                  Nova2Simility [ConditionExpression = "conditions.SimilityFilter.evaluate(context) == true"]
+                  Simility [ConditionExpression = "conditions.SimilityFilter.evaluate(context) == true" ref = "risksimdecisionserv.fraud-evaluate"]
+                  SimilityPostActionHandler [inputs = "Start|NovaDCCConsolidator|Simility" ConditionExpression = "conditions.isSimilityResultAvailable.evaluate(context) == true"]
+                  Kafka [ConditionExpression = "conditions.isSimilityResultAvailable.evaluate(context) == true" channel="kafkaPublisherRisk" isHeaderEnabled="false" topicName="risk.raas.simdecisionevent"]
+                  RiskAssessmentLifecycleHandlerProcessor [ConditionExpression = "conditions.RiskAssessmentFilter.evaluate(context) == true" inputs = "Start|RiskRaptorDCC|RUPSUCCRamp|RUPSPPHRamp"]
+                  RiskAssessmentLifecycleServ [ref = "riskassessmentslcserv.payment-assessments"]
+                  RiskAssessmentLifecycleHandlerTransformer []
+          }
+
+      - name: repaymentsSubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV1ToComplianceV1HeaderPayloadManipulator NovaV1ToLimitsV1HeaderPayloadManipulator Nova2Repayment Nova2Risk StandIn RemediationValidator}
+                  NovaV1ToComplianceV1HeaderPayloadManipulator -> { Nova2Compliance }
+                  NovaV1ToLimitsV1HeaderPayloadManipulator -> { Nova2Limit }
+                  Nova2Compliance -> { CPLDSRamp }
+                  Nova2Compliance -> { Compliance }
+                  Nova2Limit -> { Limits }
+                  Nova2Repayment -> { RepaymentEvaluate RepaymentEvaluateAudit }
+                  Nova2Risk -> { RiskRaptor }
+                  RemediationValidator -> { Nova2Remediation }
+                  Nova2Remediation -> {RRPS}
+                  StandIn -> { NOVARepaymentConsolidator NovaConsolidator }
+                  CPLDSRamp -> { NOVARepaymentConsolidator NovaConsolidator }
+                  Compliance -> { NOVARepaymentConsolidator NovaConsolidator }
+                  Limits -> { NOVARepaymentConsolidator NovaConsolidator }
+                  RepaymentEvaluate -> { NOVARepaymentConsolidator }
+                  RiskRaptor -> { NovaConsolidator FPTITransform } 
+                  RRPS -> { NOVARepaymentConsolidator NovaConsolidator }
+                  NOVARepaymentConsolidator -> { BizLogging }
+                  NOVARepaymentConsolidator -> { End }
+                  NovaConsolidator -> { FPTITransform }
+                  FPTITransform -> FPTI
+                  NovaConsolidator -> { BizLogging }
+                  NovaConsolidator -> { End }
+                  End -> {UnifiedLogging}
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  Limits[ref = "limitsdecisionserv.transaction_decisions"]
+                  StandIn[ref="riskunifiedstandinserv.payment_review_standin_decision"]
+                  RepaymentEvaluate[ref = "riskudrepayevalserv.repayment-evaluate" ConditionExpression="(conditions.isPPWCOneTimePayments.evaluate(context) == false) || (conditions.isPPWCOneTimePayments.evaluate(context) == true && conditions.PPWCRepaymentAudit.OT_flow.evaluate(context) == false && conditions.PPWCRepaymentRamp.OT_flow.evaluate(context) == true)"]
+                  RepaymentEvaluateAudit[ref = "riskudrepayevalserv.repayment-evaluate" ConditionExpression="conditions.isPPWCOneTimePayments.evaluate(context) == true && conditions.PPWCRepaymentAudit.OT_flow.evaluate(context) == true"]
+                  RiskRaptor[ref = "riskasfgatewayserv.risk_transaction_review" ConditionExpression="conditions.isPPWCOneTimePayments.evaluate(context) == true && conditions.PPWCRepaymentRamp.OT_flow.evaluate(context) == false"]
+                  FPTITransform[dataProvider = "com.paypal.risk.gateway.endpoint.nova.consolidator.NovaFPTIData" inputs = "NovaConsolidator|RiskRaptor|CPLDSRamp|Compliance|Limits|StandIn"]
+                  Nova2Remediation[ inputs = "Start" ConditionExpression = "conditions.RemediateRequestValidation.evaluate(context)" ]
+                  RRPS[ref="riskrecoveryprocserv.remediate-negative-balance-nova" ConditionExpression="conditions.RRPSRamp.rrps_ramp.evaluate(context) == true && conditions.isPOS.evaluate(context) == false"]
+                  BizLogging[format = "json" inputs = "Start|NOVARepaymentConsolidator|NovaConsolidator"]
+                  UnifiedLogging [exprFile = "logExpr.txt"]
+                  NOVARepaymentConsolidator [inputs = "Start|StandIn|CPLDSRamp|Compliance|Limits|RepaymentEvaluate|RRPS" ConditionExpression="(conditions.isPPWCOneTimePayments.evaluate(context) == false) || (conditions.isPPWCOneTimePayments.evaluate(context) == true && conditions.PPWCRepaymentRamp.OT_flow.evaluate(context) == true)"]
+                  NovaConsolidator [inputs = "Start|RiskRaptor|CPLDSRamp|Compliance|Limits|StandIn|RRPS" ConditionExpression="(conditions.isPPWCOneTimePayments.evaluate(context) == true && conditions.PPWCRepaymentRamp.OT_flow.evaluate(context) == false)"]
+          }
+
+      - name: depositSubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV1ToComplianceV1HeaderPayloadManipulator NovaV1ToLimitsV1HeaderPayloadManipulator Nova2RiskDeposit}
+                  NovaV1ToComplianceV1HeaderPayloadManipulator -> { Nova2Compliance }
+                  NovaV1ToLimitsV1HeaderPayloadManipulator -> { Nova2Limit }
+                  Nova2Compliance -> { CPLDSRamp }
+                  Nova2Compliance -> { Compliance }
+                  Nova2Limit -> { Limits }
+                  Nova2RiskDeposit -> {RiskDeposit}
+                  CPLDSRamp -> { NovaDepositConsolidator }
+                  Compliance -> { NovaDepositConsolidator }
+                  Limits -> { NovaDepositConsolidator }
+                  RiskDeposit -> {NovaDepositConsolidator}
+                  End -> {UnifiedLogging}
+                  NovaDepositConsolidator -> { BizLogging }
+                  NovaDepositConsolidator -> { End }
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  Limits[ref = "limitsdecisionserv.transaction_decisions"]
+                  BizLogging[format = "json" inputs = "Start|NovaDepositConsolidator"]
+                  RiskDeposit[ref = "riskudfifoserv.deposit_decisions" ]
+                  NovaDepositConsolidator [inputs = "Start|CPLDSRamp|Compliance|Limits|RiskDeposit"]
+                  UnifiedLogging [exprFile = "logExpr.txt"]
+          }
+
+      - name: cashoutSubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV1ToComplianceV1HeaderPayloadManipulator NovaV1ToLimitsV1HeaderPayloadManipulator Nova2RiskCashout RemediationValidator }
+                  NovaV1ToComplianceV1HeaderPayloadManipulator -> { Nova2Compliance }
+                  NovaV1ToLimitsV1HeaderPayloadManipulator -> { Nova2Limit }
+                  Nova2Compliance -> { CPLDSRamp }
+                  Nova2Compliance -> { Compliance }
+                  Nova2Limit -> { Limits }
+                  Nova2RiskCashout -> { CashoutAudit RUFS}
+                  RemediationValidator -> { NovaCashoutConsolidator }
+                  CashoutAudit -> { RufsCashoutAudit }
+                  RUFS -> { NovaCashoutConsolidator }
+                  CPLDSRamp -> {  NovaCashoutConsolidator }
+                  Compliance -> {  NovaCashoutConsolidator }
+                  Limits -> { NovaCashoutConsolidator }
+                  End -> {UnifiedLogging}
+                  NovaCashoutConsolidator -> { BizLogging }
+                  NovaCashoutConsolidator -> { End }
+                  RufsCashoutAudit[ref = "riskudfifoserv.withdrawal_decisions" ConditionExpression = "conditions.CashoutAudit.audit.evaluate(context) == true && conditions.RudsCashoutRamp.ramp.evaluate(context) == false"]
+                  RUFS[ref = "riskudfifoserv.withdrawal_decisions" ConditionExpression = "conditions.RudsCashoutRamp.ramp.evaluate(context) == true" ]
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  Limits[ref = "limitsdecisionserv.transaction_decisions"]
+                  BizLogging[format = "json" inputs = "Start|NovaCashoutConsolidator"]
+                  NovaCashoutConsolidator [inputs = "Start|RemediationValidator|RUFS|CPLDSRamp|Compliance|Limits"]
+                  UnifiedLogging [exprFile = "logExpr.txt"]
+          }
+
+      - name: editBASubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { RPCS RemediationValidator NovaV1ToRiskV1HeaderPayloadManipulator }
+                  NovaV1ToRiskV1HeaderPayloadManipulator -> { Nova2RupsAuditTransform RUPSEditBARamp }
+                  Nova2RupsAuditTransform -> { RupsAudit }
+                  RupsAudit -> { RupsCalPublisher }
+                  RPCS -> {NovaConsolidator }
+                  RUPSEditBARamp -> { NovaConsolidator YamPublisherBRE YamPublisherPA }
+                  NovaConsolidator -> { FPTITransform }
+                  FPTITransform -> FPTI
+                  RemediationValidator -> { Nova2Remediation }
+                  RemediationValidator -> { NovaConsolidator }
+                  Nova2Remediation -> {RRPS}
+                  RRPS -> { NovaConsolidator }
+                  NovaConsolidator -> { BizLogging FPTIBizLogging }
+                  NovaConsolidator -> { End }
+                  End -> {UnifiedLogging}
+                  BizLogging[format = "json" inputs = "Start|NovaConsolidator"]
+                  FPTITransform[dataProvider = "com.paypal.risk.gateway.endpoint.nova.consolidator.NovaFPTIData"]
+                  FPTIBizLogging[dataProvider = "com.paypal.risk.gateway.endpoint.nova.consolidator.NovaFPTIBizLogData" inputs = "Start|NovaConsolidator|RUPSEditBARamp" ConditionExpression = "conditions.isPOS.evaluate(context) == false && conditions.RUPSEditBARamp.editBA_flow.evaluate(context) == true && conditions.RUPSAudit.editBA_flow.evaluate(context) == false"]
+                  RPCS[ref="riskudconsentserv.evaluate_billing_agreement" ConditionExpression = "conditions.isPOS.evaluate(context) == false && conditions.RUPSEditBARamp.editBA_flow.evaluate(context) == false"]
+                  Nova2Remediation[ inputs = "Start" ConditionExpression = "conditions.RemediateRequestValidation.evaluate(context)" ]
+                  RRPS[ref="riskrecoveryprocserv.remediate-negative-balance-nova" ConditionExpression="conditions.RRPSRamp.rrps_ramp.evaluate(context) == true && conditions.isPOS.evaluate(context) == false"]
+                  Nova2RupsAuditTransform[ConditionExpression = "conditions.isShadowTxn.evaluate(context) == false && conditions.isPOS.evaluate(context) == false && conditions.RUPSAudit.editBA_flow.evaluate(context) == true && conditions.RUPSEditBARamp.editBA_flow.evaluate(context) == false"]
+                  RupsAudit[ref="riskunifiedpaymentserv.evaluate_risk"]
+                  RUPSEditBARamp[ref="riskunifiedpaymentserv.evaluate_risk" ConditionExpression = "conditions.isShadowTxn.evaluate(context) == false && conditions.isPOS.evaluate(context) == false && conditions.RUPSEditBARamp.editBA_flow.evaluate(context) == true && conditions.RUPSAudit.editBA_flow.evaluate(context) == false"]
+                  NovaConsolidator [inputs = "Start|RPCS|RRPS|RUPSEditBARamp"]
+                  YamPublisherBRE[ConditionExpression= "conditions.isAuditShadow.evaluate(context) == false"]
+                  YamPublisherPA[ConditionExpression= "conditions.isAuditShadow.evaluate(context) == false"]
+                  UnifiedLogging [exprFile = "logExpr.txt"]
+          }
+
+      - name: tokenizationPOSSubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV1ToComplianceV1HeaderPayloadManipulator NovaV1ToLimitsV1HeaderPayloadManipulator TokenizationInputProcessor RemediationValidator }
+                  NovaV1ToComplianceV1HeaderPayloadManipulator -> { Nova2Compliance }
+                  NovaV1ToLimitsV1HeaderPayloadManipulator -> { Nova2Limit }
+                  Nova2Compliance -> { CPLDSRamp }
+                  Nova2Compliance -> { Compliance }
+                  Nova2Limit -> { Limits }
+                  RemediationValidator -> { Nova2Remediation }
+                  RemediationValidator -> { TokenizationPOSConsolidator }
+                  Nova2Remediation -> {RRPS}
+                  CPLDSRamp -> { TokenizationPOSConsolidator } 
+                  Compliance -> { TokenizationPOSConsolidator } 
+                  Limits -> { TokenizationPOSConsolidator }
+                  TokenizationInputProcessor -> { RUDTSPlanningEvaluation  StandIn }
+                  RUDTSPlanningEvaluation -> { TokenizationPOSConsolidator }
+                  StandIn -> { TokenizationPOSConsolidator }
+                  RRPS -> { TokenizationPOSConsolidator }
+                  TokenizationPOSConsolidator -> { FPTITransform }
+                  FPTITransform -> FPTI
+                  TokenizationPOSConsolidator -> { BizLogging }
+                  TokenizationPOSConsolidator -> { End }
+                  End -> {UnifiedLogging}
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  Limits[ref = "limitsdecisionserv.transaction_decisions"]
+                  BizLogging[format = "json" inputs = "Start|TokenizationPOSConsolidator"]
+                  FPTITransform[dataProvider = "com.paypal.risk.gateway.endpoint.nova.consolidator.NovaFPTIData"]
+                  Nova2Remediation[ inputs = "Start" ConditionExpression = "conditions.RemediateRequestValidation.evaluate(context)" ]
+                  RUDTSPlanningEvaluation [ ref="riskudstransactionserv.evaluate_risk"]
+                  StandIn[ref="riskunifiedstandinserv.payment_review_standin_decision" ConditionExpression="conditions.tokenizationStandIn.evaluate(context) == true"]
+                  RRPS[ref="riskrecoveryprocserv.remediate-negative-balance-nova" ConditionExpression="conditions.RRPSRamp.rrps_ramp.evaluate(context) == true && conditions.isPOS.evaluate(context) == false"]
+                  TokenizationPOSConsolidator [inputs = "Start|CPLDSRamp|Compliance|Limits|RUDTSPlanningEvaluation|RRPS|StandIn"]
+                  UnifiedLogging [exprFile = "logExpr.txt"]
+          }
+
+      - name: forcePlanGenerationSubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV1ToComplianceV1HeaderPayloadManipulator RemediationValidator }
+                  NovaV1ToComplianceV1HeaderPayloadManipulator -> { Nova2Compliance }
+                  Nova2Compliance -> { CPLDSRamp }
+                  Nova2Compliance -> { Compliance }
+                  CPLDSRamp -> { NovaConsolidator }
+                  Compliance -> { NovaConsolidator }
+                  RemediationValidator -> { Nova2Remediation }
+                  RemediationValidator -> { NovaConsolidator }
+                  Nova2Remediation -> {RRPS}
+                  RRPS -> { NovaConsolidator }
+                  NovaConsolidator -> { FPTITransform }
+                  FPTITransform -> FPTI
+                  NovaConsolidator -> { BizLogging }
+                  NovaConsolidator -> { End }
+                  End -> {UnifiedLogging}
+                  RRPS[ref="riskrecoveryprocserv.remediate-negative-balance-nova" ConditionExpression="conditions.RRPSRamp.rrps_ramp.evaluate(context) == true"]
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  BizLogging[format = "json" inputs = "Start|NovaConsolidator"]
+                  FPTITransform[dataProvider = "com.paypal.risk.gateway.endpoint.nova.consolidator.NovaFPTIData"]
+                  NovaConsolidator [inputs = "Start|CPLDSRamp|Compliance|RRPS"]
+                  UnifiedLogging [exprFile = "logExpr.txt"]
+          }
+
+      - name: novaSubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV1ToComplianceV1HeaderPayloadManipulator NovaV1ToLimitsV1HeaderPayloadManipulator Nova2Risk NovaV1ToStandInV1HeaderPayloadManipulator NovaV1ToRiskV1HeaderPayloadManipulator RUDS RUPSRevShadow RUPSSCARevShadow Nova2Simility RemediationValidator }
+                  NovaV1ToComplianceV1HeaderPayloadManipulator -> { Nova2Compliance }
+                  NovaV1ToLimitsV1HeaderPayloadManipulator -> { Nova2Limit }
+                  Nova2Risk -> { RiskRaptor }
+                  Nova2Compliance -> { CPLDSRamp }
+                  Nova2Compliance -> { Compliance }
+                  Nova2Compliance -> { ComplianceFailClose }
+                  Nova2Compliance -> { CPLDSRampFailClose }
+                  Nova2Limit -> { Limits }
+                  RUPSRevShadow -> { RUPSRevShadowRaptor }
+                  RUPSSCARevShadow -> { RUPSRevShadowRaptor }
+                  NovaV1ToRiskV1HeaderPayloadManipulator -> { Nova2RupsAudit RUPS RUPSSCAAudit RUPSSCARamp }
+                  Nova2RupsAudit -> { RupsAudit }
+                  RUPSSCAAudit -> { RupsAudit }
+                  RemediationValidator -> { Nova2Remediation }
+                  RemediationValidator -> { NovaConsolidator }
+                  Nova2Remediation -> {RRPS}
+                  RUPS -> { NovaConsolidator YamPublisherBRE YamPublisherPA RiskAssessmentLifecycleHandlerProcessor }
+                  RUPSSCARamp -> { NovaConsolidator YamPublisherBRE YamPublisherPA RiskAssessmentLifecycleHandlerProcessor }
+                  RupsAudit -> { RupsCalPublisher }
+                  Nova2Simility -> { Simility }
+                  RiskRaptor -> { NovaConsolidator FPTITransform RiskAssessmentLifecycleHandlerProcessor}
+                  CPLDSRamp -> { NovaConsolidator }
+                  Compliance -> { NovaConsolidator }
+                  ComplianceFailClose -> { NovaConsolidator }
+                  CPLDSRampFailClose -> { NovaConsolidator }
+                  Limits -> { NovaConsolidator }
+                  RiskAssessmentLifecycleHandlerProcessor -> { RiskAssessmentLifecycleServ }
+                  RiskAssessmentLifecycleServ -> { RiskAssessmentLifecycleHandlerTransformer }
+                  NovaV1ToStandInV1HeaderPayloadManipulator -> { StandIn }
+                  StandIn -> {NovaConsolidator FPTITransform }
+                  Simility -> { NovaConsolidator }
+                  RRPS -> { NovaConsolidator }
+                  NovaConsolidator -> { FPTITransform }
+                  FPTITransform -> FPTI
+                  NovaConsolidator -> { BizLogging SimilityPostActionHandler FPTIBizLogging }
+                  NovaConsolidator -> { FailClose }
+                  FailClose -> { End }
+                  End -> {UnifiedLogging}
+                  SimilityPostActionHandler -> { Kafka }
+                  NovaV1ToLimitsV1HeaderPayloadManipulator[ ConditionExpression = " conditions.iqrcEligibleOptions.evaluate(context) == false"]
+                  RUPSRevShadowRaptor[ref = "riskasfgatewayserv.risk_transaction_review"]
+                 RiskRaptor[ref = "riskasfgatewayserv.risk_transaction_review" ConditionExpression="(( conditions.RUPS.all_flows.evaluate(context) == false && conditions.RUPSWhitelist.evaluate(context) == false) || conditions.DisabledFlows.rups_live.evaluate(context) == true || (conditions.RUPSSCARamp.SCA_flow.evaluate(context) == false && conditions.isSCAEligible.evaluate(context) == true) || ( conditions.isRefund.evaluate(context) == true && conditions.InstantRefund.IRefund_ramp.evaluate(context) == false )) && (conditions.RTGSRaptor.rampup.evaluate(context) == true || conditions.isVenmoInstorePayments.evaluate(context) == true)"]
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true && conditions.isFailCloseEligible.evaluate(context) == false"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions" ConditionExpression="conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false && conditions.isFailCloseEligible.evaluate(context) == false"]
+                  ComplianceFailClose[ref = "compplanningdecserv.evaluate-failclose-planning-decisions" ConditionExpression="conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false && conditions.isFailCloseEligible.evaluate(context) == true"]
+                  CPLDSRampFailClose[ref = "compplandecserv.evaluate-failclose-planning-decisions" ConditionExpression="conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true && conditions.isFailCloseEligible.evaluate(context) == true"]
+                  Limits[ref = "limitsdecisionserv.transaction_decisions" ConditionExpression="if(context.getInput().transactionContext != null && context.getInput().transactionContext.productIdentifiers!=null && context.getInput().transactionContext.productIdentifiers.paymentServicesCategory!=null && context.getInput().transactionContext.productIdentifiers.paymentServicesCategory.toString() eq 'RESERVE_FUNDS' && context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolutionCategory!=null && context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolutionCategory.toString() eq 'MASSPAY') { return false } else true"]
+                  BizLogging[format = "json" inputs = "Start|NovaConsolidator"]
+                  FPTITransform[dataProvider = "com.paypal.risk.gateway.endpoint.nova.consolidator.NovaFPTIData" inputs = "NovaConsolidator|RUPS|RUPSSCARamp|RiskRaptor|CPLDSRamp|Compliance|Limits|StandIn|Simility|RRPS"]
+                  FPTIBizLogging[dataProvider = "com.paypal.risk.gateway.endpoint.nova.consolidator.NovaFPTIBizLogData" inputs = "Start|NovaConsolidator|RUPS|RUPSSCARamp|RiskRaptor|CPLDSRamp|Compliance|ComplianceFailClose|CPLDSRampFailClose|Limits|StandIn|Simility|RRPS"]
+                  Nova2Remediation[ inputs = "Start" ConditionExpression = "conditions.RemediateRequestValidation.evaluate(context)" ]
+                  RUPSRevShadow[ConditionExpression="((conditions.RUPS.all_flows.evaluate(context) == true && conditions.RUPS.all_flows_rev_shadow.evaluate(context) == true) || conditions.RUPSWhitelist.evaluate(context) == true) && conditions.DisabledFlows.rups_live.evaluate(context) == false && conditions.isSCAEligible.evaluate(context) == false && conditions.isRefund.evaluate(context) == false"]
+                  RUPSSCARevShadow[ConditionExpression="conditions.RUPSSCARamp.SCA_flow_Rev_Shadow.evaluate(context) == true && conditions.RUPSSCARamp.SCA_flow.evaluate(context) == true && conditions.DisabledFlows.rups_live.evaluate(context) == false && conditions.isRefund.evaluate(context) == false"]
+                  Nova2Limit [ConditionExpression = "conditions.isMillenniumBACreateWithPurchase.evaluate(context) != true && conditions.isMillenniumBAWithoutPurchase.evaluate(context) != true && conditions.isDoECNonOrder.evaluate(context) == false && conditions.isMillenniumRPWithPurchase.evaluate(context) != true && conditions.isMillenniumRPWithoutPurchase.evaluate(context) != true && conditions.isMillenniumWPSSubscription.evaluate(context) != true && conditions.isMillenniumSubscriptionV1.evaluate(context) != true"]
+                  StandIn[ref="riskunifiedstandinserv.payment_review_standin_decision" ConditionExpression="conditions.stand_in.risk.evaluate(context) == true"]
+                  RUPS[ref="riskunifiedpaymentserv.evaluate_risk" ConditionExpression= "( (conditions.RUPS.all_flows.evaluate(context) == true && conditions.isRefund.evaluate(context) == false) || conditions.RUPSWhitelist.evaluate(context) == true || ( conditions.isRefund.evaluate(context) == true && conditions.InstantRefund.IRefund_ramp.evaluate(context) == true)) && conditions.DisabledFlows.rups_live.evaluate(context) == false && conditions.isSCAEligible.evaluate(context) == false"]
+                  RUPSSCARamp[ref="riskunifiedpaymentserv.evaluate_risk" ConditionExpression= "conditions.RUPSSCARamp.SCA_flow.evaluate(context) == true && conditions.DisabledFlows.rups_live.evaluate(context) == false && conditions.isRefund.evaluate(context) == false"]
+                  RUDS[ref="riskunifiedecisionserv.evaluate_risk" ConditionExpression= "conditions.RUDS.audit.evaluate(context)==true && conditions.isConcordia.Concordia.evaluate(context) == false && (conditions.RUPS.all_flows.evaluate(context) == true || conditions.RUPSAudit.all_flows.evaluate(context) == true)"]
+                  RRPS[ref="riskrecoveryprocserv.remediate-negative-balance-nova" ConditionExpression="conditions.RRPSRamp.rrps_ramp.evaluate(context) == true || conditions.isMamAccntConsolidation.evaluate(context) == true"]
+                  Nova2RupsAudit[ConditionExpression= "conditions.isShadowTxn.evaluate(context) == false && conditions.RUPS.all_flows.evaluate(context) == false && conditions.RUPSWhitelist.evaluate(context) == false && conditions.DisabledFlows.rups_audit.evaluate(context) == false && conditions.RUPSAudit.all_flows.evaluate(context) == true && conditions.isSCAEligible.evaluate(context) == false"]
+                  RUPSSCAAudit[ConditionExpression= "conditions.isShadowTxn.evaluate(context) == false && conditions.RUPSSCAAudit.SCA_flow.evaluate(context) == true && conditions.RUPSSCARamp.SCA_flow.evaluate(context) == false && conditions.DisabledFlows.rups_audit.evaluate(context) == false"]
+                  RupsAudit[ref="riskunifiedpaymentserv.evaluate_risk"]
+                  NovaConsolidator [inputs = "Start|RUPS|RUPSSCARamp|RiskRaptor|CPLDSRamp|Compliance|ComplianceFailClose|CPLDSRampFailClose|Limits|StandIn|Simility|RRPS"]
+                  YamPublisherBRE[ConditionExpression= "conditions.isAuditShadow.evaluate(context) == false"]
+                  YamPublisherPA[ConditionExpression= "conditions.isAuditShadow.evaluate(context) == false"]
+                  UnifiedLogging [exprFile = "logExpr.txt"]
+                  Nova2Simility [ConditionExpression = "conditions.SimilityFilter.evaluate(context) == true"]
+                  Simility [ConditionExpression = "conditions.SimilityFilter.evaluate(context) == true" ref = "risksimdecisionserv.fraud-evaluate"]
+                  SimilityPostActionHandler [inputs = "Start|NovaConsolidator|Simility" ConditionExpression = "conditions.isSimilityResultAvailable.evaluate(context) == true"]
+                  Kafka [ConditionExpression = "conditions.isSimilityResultAvailable.evaluate(context) == true" channel="kafkaPublisherRisk" isHeaderEnabled="false" topicName="risk.raas.simdecisionevent"]
+                  RiskAssessmentLifecycleHandlerProcessor [ConditionExpression = "conditions.RiskAssessmentFilter.evaluate(context) == true" inputs = "Start|RiskRaptor|RUPS|RUPSSCARamp"]
+                  RiskAssessmentLifecycleServ [ref = "riskassessmentslcserv.payment-assessments"]
+                  RiskAssessmentLifecycleHandlerTransformer []
+                  FailClose [FailCloseName="failClose.novaFailCloseConsolidator"]
+              }
+
+      - name: remittanceSubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV1ToComplianceV1HeaderPayloadManipulator NovaV1ToLimitsV1HeaderPayloadManipulator NovaV1ToRiskV1HeaderPayloadManipulator NovaV1ToStandInV1HeaderPayloadManipulator NovaV1ToRUDRSManipulator RUDS RUPSRevShadow RUPSSCARevShadow RemediationValidator }
+                  NovaV1ToComplianceV1HeaderPayloadManipulator -> { Nova2Compliance }
+                  NovaV1ToLimitsV1HeaderPayloadManipulator -> { Nova2Limit }
+                  Nova2Compliance -> { CPLDSRamp }
+                  Nova2Compliance -> { Compliance }
+                  CPLDSRamp -> { NovaRemittanceConsolidator }
+                  Compliance -> { NovaRemittanceConsolidator }
+                  Nova2Limit -> { Limits }
+                  Limits -> { NovaRemittanceConsolidator }
+                  NovaV1ToRiskV1HeaderPayloadManipulator -> { Nova2RupsAuditTransform RUPS RUPSSCAAudit RUPSSCARamp }
+                  NovaV1ToStandInV1HeaderPayloadManipulator -> { StandIn }
+                  StandIn -> {NovaRemittanceConsolidator FPTITransform }
+                  NovaV1ToRUDRSManipulator -> { Nova2RudrsAudit RUDRS RUDRSSCAAudit RUDRSSCARamp}
+                  RUPSRevShadow -> { RUPSRevShadowRaptor }
+                  RUPSSCARevShadow -> { RUPSRevShadowRaptor }
+                  RemediationValidator -> { Nova2Remediation }
+                  RemediationValidator -> { NovaRemittanceConsolidator }
+                  Nova2RupsAuditTransform -> { RupsAudit }
+                  RUPS -> { NovaRemittanceConsolidator YamPublisherBRE YamPublisherPA RiskAssessmentLifecycleHandlerProcessor }
+                  RUPSSCAAudit -> { RupsAudit }
+                  RUPSSCARamp -> { NovaRemittanceConsolidator YamPublisherBRE YamPublisherPA RiskAssessmentLifecycleHandlerProcessor }
+                  Nova2RudrsAudit -> { RUDRSAudit }
+                  RUDRS -> { NovaRemittanceConsolidator RemiYamPublisherBRE RemiYamPublisherPA RiskAssessmentLifecycleHandlerProcessor }
+                  RUDRSSCAAudit -> { RUDRSAudit }
+                  RUDRSSCARamp -> { NovaRemittanceConsolidator RemiYamPublisherBRE RemiYamPublisherPA RiskAssessmentLifecycleHandlerProcessor }
+                  Nova2Remediation -> {RRPS}
+                  RupsAudit -> { RupsCalPublisher }
+                  RUDRSAudit -> { RudrsCalPublisher }
+                  RRPS -> { NovaRemittanceConsolidator }
+                  RiskAssessmentLifecycleHandlerProcessor -> { RiskAssessmentLifecycleServ }
+                  RiskAssessmentLifecycleServ -> { RiskAssessmentLifecycleHandlerTransformer }
+                  NovaRemittanceConsolidator -> { FPTITransform }
+                  FPTITransform -> FPTI
+                  NovaRemittanceConsolidator -> { BizLogging FPTIBizLogging}
+                  NovaRemittanceConsolidator -> { End }
+                  End -> {UnifiedLogging}
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  NovaV1ToLimitsV1HeaderPayloadManipulator[ ConditionExpression = " conditions.iqrcEligibleOptions.evaluate(context) == false"]
+                  Nova2Limit [ConditionExpression = "conditions.isMillenniumBACreateWithPurchase.evaluate(context) != true && conditions.isMillenniumBAWithoutPurchase.evaluate(context) != true && conditions.isDoECNonOrder.evaluate(context) == false && conditions.isMillenniumRPWithPurchase.evaluate(context) != true && conditions.isMillenniumRPWithoutPurchase.evaluate(context) != true && conditions.isMillenniumWPSSubscription.evaluate(context) != true && conditions.isMillenniumSubscriptionV1.evaluate(context) != true"]
+                  Limits[ref = "limitsdecisionserv.transaction_decisions" ConditionExpression="if(context.getInput().transactionContext != null && context.getInput().transactionContext.productIdentifiers!=null && context.getInput().transactionContext.productIdentifiers.paymentServicesCategory!=null && context.getInput().transactionContext.productIdentifiers.paymentServicesCategory.toString() eq 'RESERVE_FUNDS' && context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolutionCategory!=null && context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolutionCategory.toString() eq 'MASSPAY') { return false } else true"]
+                  StandIn[ref="riskunifiedstandinserv.payment_review_standin_decision" ConditionExpression="conditions.stand_in.risk.evaluate(context) == true"]
+                  RUDS[ref="riskunifiedecisionserv.evaluate_risk" ConditionExpression= "conditions.RUDS.audit.evaluate(context)==true && conditions.isConcordia.Concordia.evaluate(context) == false && (conditions.RUPS.all_flows.evaluate(context) == true || conditions.RUPSAudit.all_flows.evaluate(context) == true)"]
+                  RUPSRevShadow[ConditionExpression="((conditions.RUPS.all_flows.evaluate(context) == true && conditions.RUPS.all_flows_rev_shadow.evaluate(context) == true) || conditions.RUPSWhitelist.evaluate(context) == true) && conditions.DisabledFlows.rups_live.evaluate(context) == false && conditions.isSCAEligible.evaluate(context) == false"]
+                  RUPSSCARevShadow[ConditionExpression="conditions.RUPSSCARamp.SCA_flow_Rev_Shadow.evaluate(context) == true && conditions.RUPSSCARamp.SCA_flow.evaluate(context) == true && conditions.DisabledFlows.rups_live.evaluate(context) == false"]
+                  RUPSRevShadowRaptor[ref = "riskasfgatewayserv.risk_transaction_review"]
+                  Nova2RupsAuditTransform[ConditionExpression= "conditions.isShadowTxn.evaluate(context) == false && conditions.isSCAEligible.evaluate(context)  == false && conditions.RUDRS.RUPS_in_rev_shadow.evaluate(context) == true"]
+                  RUPS[ref="riskunifiedpaymentserv.evaluate_risk" ConditionExpression= "( conditions.RUPS.all_flows.evaluate(context) == true || conditions.RUPSWhitelist.evaluate(context) == true ) && conditions.DisabledFlows.rups_live.evaluate(context) == false && conditions.isSCAEligible.evaluate(context) == false && conditions.RUDRS.inRamp.evaluate(context) == false"]
+                  RUPSSCAAudit[ConditionExpression= "conditions.isShadowTxn.evaluate(context) == false && conditions.RUPSSCAAudit.SCA_flow.evaluate(context) == true && conditions.RUPSSCARamp.SCA_flow.evaluate(context) == false && conditions.DisabledFlows.rups_audit.evaluate(context) == false || conditions.RUDRSSCA.RUPS_in_rev_shadow.evaluate(context) == true"]
+                  RUPSSCARamp[ref="riskunifiedpaymentserv.evaluate_risk" ConditionExpression= "conditions.RUPSSCARamp.SCA_flow.evaluate(context) == true && conditions.DisabledFlows.rups_live.evaluate(context) == false && conditions.RUDRSSCARamp.SCA_flow.evaluate(context) == false"]
+                  Nova2RudrsAudit[ConditionExpression="conditions.isShadowTxn.evaluate(context) == false && conditions.RUDRS.inAudit.evaluate(context) == true && conditions.RUDRS.inRamp.evaluate(context) == false && conditions.isSCAEligible.evaluate(context) == false"]
+                  RUDRS[ref="riskudremittanceserv.evaluate_risk" ConditionExpression="conditions.RUDRS.inRamp.evaluate(context) == true && conditions.DisabledFlows.rups_live.evaluate(context) == false && conditions.isSCAEligible.evaluate(context) == false"]
+                  RUDRSSCAAudit[ConditionExpression= "conditions.isShadowTxn.evaluate(context) == false && conditions.RUDRSSCAAudit.SCA_flow.evaluate(context) == true && conditions.RUDRSSCARamp.SCA_flow.evaluate(context) == false"]
+                  RUDRSSCARamp[ref="riskudremittanceserv.evaluate_risk" ConditionExpression= "conditions.RUDRSSCARamp.SCA_flow.evaluate(context) == true && conditions.DisabledFlows.rups_live.evaluate(context) == false"]
+                  Nova2Remediation[ inputs = "Start" ConditionExpression = "conditions.RemediateRequestValidation.evaluate(context)" ]
+                  RupsAudit[ref="riskunifiedpaymentserv.evaluate_risk"]
+                  RUDRSAudit[ref="riskudremittanceserv.evaluate_risk"]
+                  RRPS[ref="riskrecoveryprocserv.remediate-negative-balance-nova" ConditionExpression="conditions.RRPSRamp.rrps_ramp.evaluate(context) == true"]
+                  NovaRemittanceConsolidator [inputs = "Start|RUPS|RUPSSCARamp|RUDRS|RUDRSSCARamp|CPLDSRamp|Compliance|Limits|StandIn|RRPS"]
+                  BizLogging[format = "json" inputs = "Start|NovaRemittanceConsolidator"]
+                  FPTITransform[dataProvider = "com.paypal.risk.gateway.endpoint.nova.consolidator.NovaFPTIData" inputs = "NovaRemittanceConsolidator|RUPS|RUPSSCARamp|RUDRS|CPLDSRamp|Compliance|Limits|StandIn|RRPS"]
+                  FPTIBizLogging[dataProvider = "com.paypal.risk.gateway.endpoint.nova.consolidator.NovaFPTIBizLogData" inputs = "Start|NovaRemittanceConsolidator|RUPS|RUPSSCARamp|RUDRS|CPLDSRamp|Compliance|Limits|StandIn|RRPS"]
+                  UnifiedLogging [exprFile = "logExpr.txt"]
+                  RiskAssessmentLifecycleHandlerProcessor [ConditionExpression = "conditions.RiskAssessmentFilter.evaluate(context) == true" inputs = "Start|RUPS|RUPSSCARamp|RUDRS"]
+                  RiskAssessmentLifecycleServ [ref = "riskassessmentslcserv.payment-assessments"]
+                  RiskAssessmentLifecycleHandlerTransformer []
+              }
+
+      - name: sandBoxSubDiagraph
+        workflow: |
+          digraph SubDiagraph {
+                  Start -> { NovaV1ToComplianceV1HeaderPayloadManipulator NovaV1ToLimitsV1HeaderPayloadManipulator Nova2RiskSB }
+                  NovaV1ToComplianceV1HeaderPayloadManipulator -> { Nova2Compliance }
+                  NovaV1ToLimitsV1HeaderPayloadManipulator -> { Nova2Limit }
+                  Nova2RiskSB -> { RiskSB }
+                  Nova2Limit -> { Limits }
+                  Nova2Compliance -> { CPLDSRamp }
+                  Nova2Compliance -> { Compliance }
+                  RiskSB -> { NovaSandBoxConsolidator  }
+                  CPLDSRamp -> {  NovaSandBoxConsolidator }
+                  Compliance -> {  NovaSandBoxConsolidator }
+                  Limits -> {   NovaSandBoxConsolidator }
+                  End -> { UnifiedLogging }
+                  NovaSandBoxConsolidator -> { BizLogging }
+                  NovaSandBoxConsolidator -> { End }
+                  RiskSB[ref = "risksimulationserv.rda-coverage-transaction_review"]
+                  CPLDSRamp[ref="compplandecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == true"]
+                  Compliance[ref = "compplanningdecserv.evaluate_planning_decisions" ConditionExpression = "conditions.CPLDSRamp.CPLDS_flow.evaluate(context) == false"]
+                  Limits[ref = "limitsdecisionserv.transaction_decisions"]
+                  BizLogging[format = "json" inputs = "Start|NovaSandBoxConsolidator"]
+                  NovaSandBoxConsolidator [inputs = "Start|RiskSB|CPLDSRamp|Compliance|Limits"]
+                  UnifiedLogging [exprFile = "logExpr.txt"]
+          
+              }
+    workflowLogger:
+      nodes: [ComplianceFailClose, CPLDSRampFailClose, CPLDSRamp, Compliance, RiskRaptor, StandIn, RUPS, RUPSSCARamp, RUDRS, RUPSPPHRamp]
+      classes: [com.paypal.risk.gateway.endpoint.nova.util.UnifiedLoggerHelper]
+    failClose:
+      - name: novaFailCloseConsolidator
+        implClazz: com.paypal.risk.gateway.endpoint.nova.condition.NovaFailCloseConsolidator
+
+    conditions:
+      - name: isFailCloseEligible
+        condition: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").isFailCloseEligible(context) "
+
+      - name : tokenizationOrPosV1
+        clazz : com.paypal.risk.gateway.endpoint.nova.condition.tokenization.TokenizationPosV1Conditions
+
+      - name: tokenizationStandIn
+        clazz : com.paypal.risk.gateway.endpoint.nova.condition.tokenization.TokenizationPosV1StandInConditions
+
+      - name : iqrcEligibleOptions
+        condition : "context.getInput().clientConfiguration != null && context.getInput().clientConfiguration.experience != null && context.getInput().clientConfiguration.productCode !=null && context.getInput().clientConfiguration.experience.entryPoint == 'QR_CODE' && context.getInput().clientConfiguration.experience.productFlow !=null && 'IN_STORE' == context.getInput().clientConfiguration.productCode && ('PAYMENT_PREFERENCE_SETUP' == context.getInput().clientConfiguration.experience.productFlow || 'PAYMENT_PREFERENCE_UPDATE' == context.getInput().clientConfiguration.experience.productFlow || 'PAYMENT_PREFERENCE_VALIDATION' == context.getInput().clientConfiguration.experience.productFlow)"
+
+      - name: RRPSRamp
+        type : throttle
+        condition : "context.getInput() != null && context.getInput().participantProfiles != null"
+        groups:
+          - name : rrps_ramp
+            field : "for(x : context.getInput().participantProfiles) { if(x.participantType.toString() == 'SENDER') {return x.accountNumber} } return null"
+            percentage: 'conditions.RRPSRamp.rrps_ramp.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.NBDisclosuresFilter
+
+      - name: InstantRefund
+        type: throttle
+        condition: "context.getInput() != null && context.getInput().participantProfiles !=null"
+        groups:
+          - name: IRefund_ramp
+            field: "for(x : context.getInput().participantProfiles) {if (x.participantType.toString() == 'SENDER') {return x.accountNumber}} return null"
+            percentage: 'conditions.InstantRefund.IRefund_ramp.percentage'
+
+      - name: RemediateRequestValidation
+        condition: "context.getNodeState('RemediationValidator').getOutput() == true"
+
+      - name: RUDS
+        type: throttle
+        condition: "context.getInput() != null && context.getInput().participantProfiles != null && context.getInput().transactionContext != null"
+        groups:
+          - name: audit
+            field: "{for(x : context.getInput().participantProfiles) { if(x.participantType.toString() == 'SENDER') {return x.accountNumber} } return '9999' }"
+            percentage: 'conditions.RUDSAudit.All_flows.percentage'
+
+      - name: RUPSAudit
+        type : throttle
+        condition : "context.getInput() != null && context.getInput().participantProfiles != null && context.getInput().transactionContext != null"
+        groups:
+          - name : all_flows
+            field : "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPSAudit.all_flows.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+          - name: editBA_flow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPSAudit.editBA_flow.percentage'
+            condition: "new(\"com.paypal.risk.gateway.endpoint.nova.condition.EditBACondition\").evaluate(context, null) == true"
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+          - name: PPH_flow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPSAudit.PPH_flow.percentage'
+            condition: "context.getInput().transactionContext.productIdentifiers != null && context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolution == 'DIRECT_CREDIT_CARD' && context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory == 'PAYPAL_HERE'"
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: RUPSSCAAudit
+        type : throttle
+        condition : "if(context.getInput() != null && context.getInput().participantProfiles != null && context.getInput().transactionContext != null){for (profile : context.getInput().participantProfiles) { if (profile != null && profile.participantType != null && profile.accountType != null && profile.legalCountry != null && profile.participantType.toString()=='SENDER') { return !(['GUEST','GUEST_PREMIER','GUEST_BUSINESS'].contains(profile.accountType.toString())) && (['FR','GI','SK','DE','GR','PL','BE','RE','PT','ES','LV','NO','DK','LI','EE','SI','SM','LT','VA','MQ','GB','RO','LU','MT','CY','GF','HU','AT','NL','IE','BG','IT','GP','SE','CZ','FI','YT','AD','IM','GG','JE','IS','HR','RS'].contains(profile.legalCountry.toString())) } }return false}else{return false}"
+        groups:
+          - name : SCA_flow
+            field : "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPSSCAAudit.SCA_flow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: RUPSWhitelist
+        clazz : com.paypal.risk.gateway.endpoint.nova.condition.RUPSWhitelist
+
+
+      - name: H2RShadowByAmount
+        clazz : com.paypal.risk.gateway.endpoint.nova.condition.ShadowByTxnAmountCondition
+
+      - name: RepaymentTraffic
+        type: throttle
+        condition: "new(\"com.paypal.risk.gateway.endpoint.nova.condition.RepaymentRequestCondition\").evaluate(context, null) == true"
+        groups:
+          - name : ramp
+            field : "for(x : context.getInput().participantProfiles) { if(x.participantType !=null && x.participantType.toString() == 'SENDER') {return x.accountNumber} } return '9999'"
+            percentage: 'conditions.RepaymentTraffic.ramp.percentage'
+
+      - name: RTGSRaptor
+        type : throttle
+        condition : "context.getInput() != null && context.getInput().participantProfiles !=null"
+        groups:
+          - name : rampup
+            field : "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rtgs_raptor_traffic_primary_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RTGSRaptor.rampup.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: RUPS
+        type : throttle
+        condition : "context.getInput() != null"
+        groups:
+          - name : all_flows
+            field : "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPS.all_flows.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+          - name : all_flows_rev_shadow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPS.all_flows_rev_shadow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: RUPSSCARamp
+        type : throttle
+        condition : "if(context.getInput() != null && context.getInput().participantProfiles != null && context.getInput().transactionContext != null){for (profile : context.getInput().participantProfiles) { if (profile != null && profile.participantType != null && profile.accountType != null && profile.legalCountry != null && profile.participantType.toString()=='SENDER') { return !(['GUEST','GUEST_PREMIER','GUEST_BUSINESS'].contains(profile.accountType.toString())) && (['FR','GI','SK','DE','GR','PL','BE','RE','PT','ES','LV','NO','DK','LI','EE','SI','SM','LT','VA','MQ','GB','RO','LU','MT','CY','GF','HU','AT','NL','IE','BG','IT','GP','SE','CZ','FI','YT','AD','IM','GG','JE','IS','HR','RS'].contains(profile.legalCountry.toString())) } }return false}else{return false}"
+        groups:
+          - name : SCA_flow
+            field : "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPSSCARamp.SCA_flow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+          - name : SCA_flow_Rev_Shadow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPSSCARamp.SCA_flow_Rev_Shadow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: RUPSEditBARamp
+        type: throttle
+        condition: "new(\"com.paypal.risk.gateway.endpoint.nova.condition.EditBACondition\").evaluate(context, null) == true"
+        groups:
+          - name : editBA_flow
+            field : "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPSEditBARamp.editBA_flow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: RUPSUCCRamp
+        type: throttle
+        condition: "context.getInput() != null && context.getInput().transactionContext != null && context.getInput().transactionContext.productIdentifiers != null && context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolution == 'DIRECT_CREDIT_CARD' && (context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory == 'PAYPAL_COMPLETE_PAYMENTS' || context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory == 'DONATIONS') "
+        groups:
+          - name: UCC_flow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPSUCCRamp.UCC_flow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: CPLDSRamp
+        type: throttle
+        condition: "context.getInput() != null"
+        groups:
+          - name: CPLDS_flow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"cplds_traffic_key\", \"ACCT\")"
+            percentage: 'conditions.CPLDSRamp.CPLDS_flow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: RUPSPPHRamp
+        type: throttle
+        condition: "context.getInput() != null && context.getInput().transactionContext != null && context.getInput().transactionContext.productIdentifiers != null && context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolution == 'DIRECT_CREDIT_CARD' && context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory == 'PAYPAL_HERE'"
+        groups:
+          - name: PPH_flow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPSPPHRamp.PPH_flow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+          - name: PPH_rev_shadow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rups_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUPSPPHRamp.PPH_rev_shadow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: DisabledFlows
+        type: throttle
+        condition: "context.getInput() != null"
+        groups:
+          - name : rups_live
+            field : "DisabledFlows.rups_live.list"
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.DisabledFlowsThrottleCondition
+          - name : rups_audit
+            field : "DisabledFlows.rups_audit.list"
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.DisabledFlowsThrottleCondition
+
+      - name: Nova2RiskSB
+        type : throttle
+        condition : "context.getInput() != null"
+        groups:
+          - name : SB_flow
+            field : "for(x : context.getInput().participantProfiles) { if(x.participantType.toString() == 'SENDER') {return x.accountNumber} } return null"
+            percentage: 'conditions.Nova2RiskSB.SB_flow.percentage'
+            condition: "context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolution == 'EXPRESS_CHECKOUT' || context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolution == 'DIRECT_CREDIT_CARD' || (context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolution =='CASH_WITHDRAWAL' && context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory =='PARTNER_MANAGED_WITHDRAWALS')"
+
+      - name: isEditBA
+        clazz : com.paypal.risk.gateway.endpoint.nova.condition.EditBACondition
+
+      - name: isMamAccntConsolidation
+        condition : "context.getInput().clientConfiguration != null && context.getInput().clientConfiguration.productCode == 'FUNDS_TRANSFER_FOR_RELATED_ACCOUNTS' && context.getInput().clientConfiguration.experience != null && context.getInput().clientConfiguration.experience.productFlow == 'FUNDS_TRANSFER_FOR_RELATED_ACCOUNTS' && context.getInput().clientConfiguration.productFeature == 'TRANSFER_FOR_CONSOLIDATION'"
+
+      - name: isMillenniumBACreateWithPurchase
+        condition : "context.getInput().clientConfiguration != null && (context.getInput().clientConfiguration.productCode == 'BILLING_AGREEMENTS' || ('VAULT' == context.getInput().clientConfiguration.productCode && 'BILLING_AGREEMENTS' == context.getInput().clientConfiguration.productFeature)) && context.getInput().clientConfiguration.experience != null && context.getInput().clientConfiguration.experience.productFlow == 'BUYER_APPROVAL_BILLING_AGREEMENT_WITH_PURCHASE'"
+
+      - name: isMillenniumBAWithoutPurchase
+        condition : "context.getInput().clientConfiguration != null && (context.getInput().clientConfiguration.productCode == 'BILLING_AGREEMENTS' || (('VAULT' == context.getInput().clientConfiguration.productCode || 'LIPP' == context.getInput().clientConfiguration.productCode) && 'BILLING_AGREEMENTS' == context.getInput().clientConfiguration.productFeature)) && context.getInput().clientConfiguration.experience != null && context.getInput().clientConfiguration.experience.productFlow == 'BUYER_APPROVAL_BILLING_AGREEMENT_CREATE'"
+
+      - name: isMillenniumWPSSubscription
+        condition : "context.getInput().clientConfiguration != null && context.getInput().clientConfiguration.productCode.equals('BILLING_SUBSCRIPTIONS') && context.getInput().clientConfiguration.integrationArtifact.equals('WPS') && context.getInput().clientConfiguration.api.equals('NONE')"
+
+      - name: isMillenniumSubscriptionV1
+        condition : "context.getInput().clientConfiguration != null && context.getInput().clientConfiguration.productCode.equals('BILLING_SUBSCRIPTIONS') && (context.getInput().clientConfiguration.integrationArtifact.equals('NONE') ||context.getInput().clientConfiguration.integrationArtifact.equals('PAYPAL_JS_SDK')) && context.getInput().clientConfiguration.api.equals('SUBSCRIPTIONS_V1')"
+
+      - name: isMillenniumRPWithPurchase
+        condition : "context.getInput().clientConfiguration != null && context.getInput().clientConfiguration.productCode.equals('BILLING_SUBSCRIPTIONS') && context.getInput().clientConfiguration.integrationArtifact.equals('NONE') && context.getInput().clientConfiguration.api.equals('LEGACY_CHECKOUT_API') && context.getInput().clientConfiguration.experience != null && context.getInput().clientConfiguration.experience.productFlow.equals('BUYER_APPROVAL_BILLING_AGREEMENT_WITH_PURCHASE')"
+
+      - name: isMillenniumRPWithoutPurchase
+        condition : "context.getInput().clientConfiguration != null && context.getInput().clientConfiguration.productCode.equals('BILLING_SUBSCRIPTIONS') && context.getInput().clientConfiguration.integrationArtifact.equals('NONE') && context.getInput().clientConfiguration.api.equals('LEGACY_CHECKOUT_API') && context.getInput().clientConfiguration.experience != null && context.getInput().clientConfiguration.experience.productFlow.equals('BUYER_APPROVAL_SUBSCRIPTIONS_CREATE')"
+
+      - name: isPOS
+        condition : "context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory == 'POINT_OF_SALE'"
+
+      - name: isDCC
+        condition : "context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolution == 'DIRECT_CREDIT_CARD'"
+
+      - name: isUCC
+        condition: "context.getInput() != null && context.getInput().transactionContext != null && context.getInput().transactionContext.productIdentifiers != null && context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolution == 'DIRECT_CREDIT_CARD' && ( context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory == 'PAYPAL_COMPLETE_PAYMENTS' || context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory == 'DONATIONS') "
+
+      - name: isPPH
+        condition: "context.getInput() != null && context.getInput().transactionContext != null && context.getInput().transactionContext.productIdentifiers != null && context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolution == 'DIRECT_CREDIT_CARD' && context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory == 'PAYPAL_HERE'"
+
+      - name: isDCCAndNotPPH
+        condition : "context.getInput().transactionContext.productIdentifiers.paymentsAcceptanceSolution == 'DIRECT_CREDIT_CARD' && context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory != 'PAYPAL_HERE'"
+
+      - name: isCashout
+        condition : "(context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolution =='CASH_WITHDRAWAL' && context.getInput().transactionContext.productIdentifiers.PaymentsAcceptanceSolutionCategory =='PARTNER_MANAGED_WITHDRAWALS') || (context.getInput().clientConfiguration != null && context.getInput().clientConfiguration.experience != null && context.getInput().clientConfiguration.experience.productFlow == 'PENNY_WITHDRAWAL_ACCOUNT_VERIFICATION')"
+
+      - name: isRefund
+        condition: "context!=null && context.getInput()!= null && context.getInput().transactionContext != null && context.getInput().transactionContext.productIdentifiers != null
+                               && context.getInput().transactionContext.productIdentifiers.PaymentIntent != null && 'REFUND' == context.getInput().transactionContext.productIdentifiers.PaymentIntent"
+
+      - name: CashoutAudit
+        type: throttle
+        condition : "context.getInput() != null"
+        groups:
+          - name : audit
+            field : "for(x : context.getInput().participantProfiles) {if (x.participantType.toString() == 'SENDER') {return x.accountNumber}} return null"
+            percentage : 'conditions.CashoutAudit.audit.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.withdrawal.throttle.CorrIDThrottleCondition
+
+      - name: RudsCashoutRamp
+        type: throttle
+        condition : "context.getInput() != null"
+        groups:
+          - name : ramp
+            field : "for(x : context.getInput().participantProfiles) {if (x.participantType.toString() == 'SENDER') {return x.accountNumber}} return null"
+            percentage : 'conditions.RudsCashoutRamp.ramp.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.withdrawal.throttle.CorrIDThrottleCondition
+
+      - name: isConcordia
+        type : throttle
+        condition : "context.getInput() != null"
+        groups:
+          - name : Concordia
+            field : "context.getInput().invocationContext.partnerName"
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.ConcordiaFilter
+
+      - name: stand_in
+        type: throttle
+        groups:
+          - name: risk
+            field: "for(x : context.getInput().participantProfiles) { if(x.participantType.toString() == 'SENDER') {return x.accountNumber} } return null"
+            percentage: 'conditions.stand_in.risk.percentage'
+
+      - name: isVenmoInstorePayments
+        condition: "context.getInput().clientConfiguration != null && context.getInput().clientConfiguration.productCode == 'IN_STORE' && context.getInput().clientConfiguration.productFeature == 'IN_STORE_PAYMENT' && context.getInput().clientConfiguration.experience != null && context.getInput().clientConfiguration.experience.productFlow == 'DIRECT_INTEGRATION_IN_STORE_PAYMENT' && context.getInput().clientConfiguration.experience.paymentMethod == 'PAY_WITH_VENMO' "
+
+      #Short circuit Limits call for DoEC calls except when the intent is Order as it can cause declined at AS2 auth call
+      - name: isDoECNonOrder
+        condition : "context.getInput().transactionContext.productIdentifiers.LegacyProductFamily =='EXPXO' && context.getInput().transactionContext.productIdentifiers.LegacyProductType =='XXOIF' && new(\"com.paypal.risk.gateway.endpoint.nova.throttle.OutOfBandDataHelper\").executionFlow(context, context.getInput().outOfBandData) && context.getInput().transactionContext.productIdentifiers.PaymentIntent !='ORDER' "
+
+      - name : isForcePlanGeneration
+        condition : "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").isForcePlanGeneration(context,context.getInput().invocationContext) "
+
+      - name: SimilityFilter
+        clazz: com.paypal.risk.gateway.endpoint.nova.condition.SimilityFilter
+
+      - name: RiskAssessmentFilter
+        clazz: com.paypal.risk.gateway.endpoint.nova.condition.RiskAssessmentFilter
+
+      # P2P Deposit withdrawl checkpoint should be if the integrations are INGO, INCOMM, GreenDot and NOT ACORN_INVESTMENTS.
+      # For ACORN_INVESTMENTS, consolidating funding should be called.
+      - name : isDepositFlow
+        condition : " !( context.getInput().clientConfiguration != null
+                          && context.getInput().clientConfiguration.productCode == 'DEPOSIT'
+                          && context.getInput().clientConfiguration.productFeature == 'CASH_IN'
+                          && context.getInput().clientConfiguration.experience != null
+                          && 'INVESTMENT_DEPOSITS' == context.getInput().clientConfiguration.experience.productFlow )
+                     && ( (context.getInput().invocationContext.businessApplication =='EXTERNAL_DEPOSITS' && context.getInput().transactionContext.productIdentifiers.PaymentServicesCategory =='FUNDS_IN')
+                          || (context.getInput().invocationContext.businessApplication =='PAYMENT' && context.getInput().transactionContext.productIdentifiers.PaymentServicesCategory =='PAYMENT_FOR_CASH_IN') ) "
+
+      - name: isSimilityResultAvailable
+        condition : "context!= null &&
+                      context.getNodeState('Simility')!= null &&
+                      context.getNodeState('Simility').getOutput() != null"
+
+      - name : isShadowTxn
+        condition : "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").isShadow(context.getInput().invocationContext) "
+
+      - name: isAuditShadow
+        condition: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").isAuditShadow(context.getInput().invocationContext)"
+
+      - name: isPPWCOneTimePayments
+        clazz: com.paypal.risk.gateway.endpoint.nova.throttle.PPWCRepaymentFilter
+
+      - name: PPWCRepaymentAudit
+        type: throttle
+        condition : "context.getInput() != null && context.getInput().participantProfiles !=null"
+        groups:
+          - name : OT_flow
+            field : "for(x : context.getInput().participantProfiles) { if(x.participantType !=null && x.participantType.toString() == 'SENDER') {return x.accountNumber} } return null"
+            percentage: 'conditions.PPWCRepaymentAudit.OT_flow.percentage'
+
+      - name: PPWCRepaymentRamp
+        type: throttle
+        condition : "context.getInput() != null && context.getInput().participantProfiles !=null"
+        groups:
+          - name : OT_flow
+            field : "for(x : context.getInput().participantProfiles) { if(x.participantType !=null && x.participantType.toString() == 'SENDER') {return x.accountNumber} } return null"
+            percentage: 'conditions.PPWCRepaymentRamp.OT_flow.percentage'
+
+      - name: isSCAEligible
+        condition: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").isSCAEligilbe(context) "
+
+      - name : isRemittanceFlow
+        condition : "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").isRemittanceFlow(context) "
+
+      - name: RUDRS
+        type: throttle
+        condition: "context.getInput() != null && context.getInput().participantProfiles != null && context.getInput().transactionContext != null"
+        groups:
+          - name: inRamp
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rudrs_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUDRS.ramp.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+          - name: inAudit
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rudrs_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUDRS.audit.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+          - name: RUPS_in_rev_shadow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rudrs_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUDRS.RUPS_rev_shadow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: RUDRSSCA
+        type: throttle
+        condition: "if(context.getInput() != null && context.getInput().participantProfiles != null && context.getInput().transactionContext != null){for (profile : context.getInput().participantProfiles) { if (profile != null && profile.participantType != null && profile.accountType != null && profile.legalCountry != null && profile.participantType.toString()=='SENDER') { return !(['GUEST','GUEST_PREMIER','GUEST_BUSINESS'].contains(profile.accountType.toString())) && (['FR','GI','SK','DE','GR','PL','BE','RE','PT','ES','LV','NO','DK','LI','EE','SI','SM','LT','VA','MQ','GB','RO','LU','MT','CY','GF','HU','AT','NL','IE','BG','IT','GP','SE','CZ','FI','YT','AD','IM','GG','JE','IS','HR','RS'].contains(profile.legalCountry.toString())) } }return false}else{return false}"
+        groups:
+          - name: RUPS_in_rev_shadow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rudrs_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUDRS.SCA_RUPS_rev_shadow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: RUDRSSCAAudit
+        type: throttle
+        condition: "if(context.getInput() != null && context.getInput().participantProfiles != null && context.getInput().transactionContext != null){for (profile : context.getInput().participantProfiles) { if (profile != null && profile.participantType != null && profile.accountType != null && profile.legalCountry != null && profile.participantType.toString()=='SENDER') { return !(['GUEST','GUEST_PREMIER','GUEST_BUSINESS'].contains(profile.accountType.toString())) && (['FR','GI','SK','DE','GR','PL','BE','RE','PT','ES','LV','NO','DK','LI','EE','SI','SM','LT','VA','MQ','GB','RO','LU','MT','CY','GF','HU','AT','NL','IE','BG','IT','GP','SE','CZ','FI','YT','AD','IM','GG','JE','IS','HR','RS'].contains(profile.legalCountry.toString())) } }return false}else{return false}"
+        groups:
+          - name: SCA_flow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rudrs_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUDRSSCAAudit.SCA_flow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+      - name: RUDRSSCARamp
+        type: throttle
+        condition: "if(context.getInput() != null && context.getInput().participantProfiles != null && context.getInput().transactionContext != null){for (profile : context.getInput().participantProfiles) { if (profile != null && profile.participantType != null && profile.accountType != null && profile.legalCountry != null && profile.participantType.toString()=='SENDER') { return !(['GUEST','GUEST_PREMIER','GUEST_BUSINESS'].contains(profile.accountType.toString())) && (['FR','GI','SK','DE','GR','PL','BE','RE','PT','ES','LV','NO','DK','LI','EE','SI','SM','LT','VA','MQ','GB','RO','LU','MT','CY','GF','HU','AT','NL','IE','BG','IT','GP','SE','CZ','FI','YT','AD','IM','GG','JE','IS','HR','RS'].contains(profile.legalCountry.toString())) } }return false}else{return false}"
+        groups:
+          - name: SCA_flow
+            field: "new(\"com.paypal.risk.gateway.endpoint.nova.util.ExecutionHelper\").getRampKeyFromRiskRequset(context, \"rudrs_traffic_key\", \"ACCTPAH\")"
+            percentage: 'conditions.RUDRSSCARamp.SCA_flow.percentage'
+            implClazz: com.paypal.risk.gateway.endpoint.nova.throttle.MD5ThrottleCondition
+
+processors:
+  - name: NovaConsolidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.consolidator.NOVAPayloadConsolidator
+  - name: NovaV2Consolidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.consolidator.NovaV2PayloadConsolidator
+    consolidators:
+      default:
+        - nova_v2_transaction
+        - nova_v2_fundingselection
+  - name: NovaV2TokenizationConsolidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.consolidator.tokenization.NovaV2TokenizationPayloadConsolidator
+    consolidators:
+      default:
+        - nova_v2_tokenization_transaction
+        - nova_v2_tokenization_fundingselection
+  - name: Nova2Compliance
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2CompliancePayloadConverter
+  - name: Nova2Risk
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RiskPayloadConverter
+  - name: Nova2Repayment
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.Nova2RepaymentConverter
+  - name: Nova2RiskSB
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2SandBoxPayloadConverter
+  - name: Nova2Limit
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2LimitsPayloadConverter
+  - name: Nova2RUDTSAudit
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RUDTSAuditConverter
+  - name: NovaV1ToRiskV1HeaderPayloadManipulator
+    clazz: com.paypal.risk.gateway.endpoint.nova.common.NovaHeaderPayloadManipulator
+  - name: NovaV1ToRUDRSManipulator
+    clazz: com.paypal.risk.gateway.endpoint.nova.common.NovaHeaderPayloadManipulator
+  - name: Nova2RupsAudit
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RUPSAuditConverter
+  - name: RUPSSCAAudit
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RUPSAuditConverter
+  - name: Nova2RupsAuditTransform
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RUPSAuditTransformer
+  - name: Nova2RiskDCC
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RiskDCCPayloadConverter
+  - name: Nova2Simility
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2SimilityConverter
+  - name: RemediationValidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.RemediationRequestValidator
+  - name: Nova2Remediation
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RemediationPayloadConverter
+  - name: NovaDCCConsolidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.consolidator.NOVADCCPayloadConsolidator
+  - name: NOVARepaymentConsolidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.consolidator.NOVARepaymentConsolidator
+  - name: RupsCalPublisher
+    clazz: com.paypal.risk.gateway.endpoint.nova.util.RupsCalPublisher
+  - name: Nova2RiskCashout
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RiskCashoutPayloadConverter
+  - name: NovaCashoutConsolidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.consolidator.NOVACashoutConsolidator
+  - name: NovaSandBoxConsolidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.consolidator.NOVASandBoxConsolidator
+  - name: YamPublisherBRE
+    clazz: com.paypal.risk.gateway.endpoint.nova.publisher.YamBREMessagePublisher
+  - name: YamPublisherPA
+    clazz: com.paypal.risk.gateway.endpoint.nova.publisher.YamPAMessagePublisher
+  - name: CashoutAudit
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.CashoutAuditConverter
+  - name: TokenizationInputProcessor
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.tokenization.RiskTokenizationInput
+  - name: NovaV2ToLimitsV2PayloadConverter
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.converter.NovaV2ToLimitsV2PayloadConverter
+  - name: NovaV2ToRiskV2HeaderPayloadManipulator
+    clazz: com.paypal.risk.gateway.endpoint.nova.common.NovaHeaderPayloadManipulator
+  - name: NovaV2ToRuDTSV2HeaderPayloadManipulator
+    clazz: com.paypal.risk.gateway.endpoint.nova.common.NovaHeaderPayloadManipulator
+  - name: NovaV2ToComplianceV2HeaderPayloadManipulator
+    clazz: com.paypal.risk.gateway.endpoint.nova.common.NovaHeaderPayloadManipulator
+  - name: NovaV2YamPublisherBRE
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.publisher.NovaV2YamBREMessagePublisher
+  - name: NovaV2YamPublisherPA
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.publisher.NovaV2YamPAMessagePublisher
+  - name: NovaV2PaymentAttemptMessagePublisher
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.publisher.NovaV2PaymentAttemptMessagePublisher
+  - name: NovaV2TokenizationYamPublisherBRE
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.publisher.tokenization.NovaV2TokenizationYamBREMessagePublisher
+  - name: NovaV2TokenizationYamPublisherPA
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.publisher.tokenization.NovaV2TokenizationYamPAMessagePublisher
+  - name: NovaV2TokenizationPaymentAttemptMessagePublisher
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.publisher.tokenization.NovaV2TokenizationPaymentAttemptMessagePublisher
+  - name: NovaV1ToLimitsV1HeaderPayloadManipulator
+    clazz: com.paypal.risk.gateway.endpoint.nova.common.NovaHeaderPayloadManipulator
+  - name: NovaV1ToComplianceV1HeaderPayloadManipulator
+    clazz: com.paypal.risk.gateway.endpoint.nova.common.NovaHeaderPayloadManipulator
+  - name: Nova2RiskDeposit
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RiskDepositPayloadConverter
+  - name: NovaDepositConsolidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.consolidator.NOVADepositConsolidator
+  - name: RUPSRevShadow
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.RUPSRevShadowPayloadConverter
+  - name: RUPSSCARevShadow
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.RUPSRevShadowPayloadConverter
+  - name: H2RRiskDCCShadow
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RiskDCCShadowPayloadConverter
+  - name: H2RRiskPPHRevShadow
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RiskDCCShadowPayloadConverter
+  - name: SimilityPostActionHandler
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.SimilityPostActionHandlerConverter
+  - name: NovaV2ToSimilityPayloadConverter
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.converter.simility.NovaV2ToSimilityPayloadConverter
+  - name: SimilityResponseTransformer
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.converter.simility.SimilityResponseTransformer
+  - name: SimilityV2PostActionHandler
+    clazz: com.paypal.risk.gateway.endpoint.nova.v2.converter.simility.SimilityV2PostActionHandlerConverter
+  - name: NovaV1ToStandInV1HeaderPayloadManipulator
+    clazz: com.paypal.risk.gateway.endpoint.nova.common.NovaHeaderPayloadManipulator
+  - name: TokenizationPOSConsolidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.consolidator.tokenization.TokenizationPOSConsolidator
+  - name: RiskAssessmentLifecycleHandlerProcessor
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.RiskAssessmentLifecycleHandlerProcessor
+  - name: RiskAssessmentLifecycleHandlerTransformer
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.RiskAssessmentLifecycleHandlerTransformer
+  - name: KafkaInfra
+    clazz: com.paypal.risk.async.gateway.processor.kafka.KafkaProcessor
+  - name: Nova2RudrsAudit
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RUDRSAuditTransformer
+  - name: RUDRSSCAAudit
+    clazz: com.paypal.risk.gateway.endpoint.nova.converter.NOVA2RUDRSAuditTransformer
+  - name: RudrsCalPublisher
+    clazz: com.paypal.risk.gateway.endpoint.nova.util.RudrsCalPublisher
+  - name: NovaRemittanceConsolidator
+    clazz: com.paypal.risk.gateway.endpoint.nova.consolidator.NovaRemittanceConsolidator
+  - name: RemiYamPublisherBRE
+    clazz: com.paypal.risk.gateway.endpoint.nova.publisher.RemittanceYamBREMessagePublisher
+  - name: RemiYamPublisherPA
+    clazz: com.paypal.risk.gateway.endpoint.nova.publisher.RemittanceYamPAMessagePublisher
+
+consolidators:
+  - name: flow_identifier
+    version: 1
+    sourceFields:
+      - key: PaymentsAcceptanceSolution
+        expressions:
+          - context.get("PaymentsAcceptanceSolution")
+      - key: PaymentFlow
+        expressions:
+          - context.get("PaymentFlow")
+      - key: PaymentsFlowApprovalType
+        expressions:
+          - context.get("PaymentsFlowApprovalType")
+    destinationField:
+      fields:
+        - key: FlowIdentifier
+          fieldExtractor: com.paypal.risk.gateway.endpoint.nova.usecase.FlowIdentifierFieldSetter
+    decisionTable:
+      name: flow_identifier_dt.yml
+      version: 1
+      typeName: Yaml
+      properties:
+  - name: nova_v2_transaction
+    version: 1
+    sourceFields:
+      - key : RiskV2TranDecisionCode
+        expressions:
+          - context.get("Rups").getOutput().getDecisions()
+        listIdExpressions:
+          - if(element.getReferenceType().equals('TRANSACTION')){element.getReferenceId()}
+        listDecisionCodeExpressions:
+          - element.getDecisionCode().toString()
+      - key : ComplianceV2TranDecisionCode
+        expressions:
+          - if(context.get("Compliance") != null && context.get("Compliance").getOutput() != null){context.get("Compliance").getOutput().getDecisions()}
+          - if(context.get("CPLDSRamp") != null && context.get("CPLDSRamp").getOutput() != null){context.get("CPLDSRamp").getOutput().getDecisions()}
+        listIdExpressions:
+          - if(element.getReferenceType().equals('TRANSACTION')){element.getReferenceId()}
+        listDecisionCodeExpressions:
+          - element.getDecisionCode().toString()
+
+    destinationField:
+      fields :
+        - key : NovaV2TransactionDecisionSetter
+          fieldExtractor : com.paypal.risk.gateway.endpoint.nova.v2.consolidator.NovaV2TransactionDecisionSetter
+
+    decisionTable:
+      name : nova_v2_transaction_dt.yml
+      version : 1
+      typeName : Yaml
+      properties :
+  - name: nova_v2_fundingselection
+    version: 1
+    sourceFields:
+      - key : RiskV2FundingDecisionCode
+        expressions:
+          - context.get("Rups").getOutput().getDecisions()
+        listIdExpressions:
+          - if(element.getReferenceType().equals('FUNDING_SELECTION')){element.getReferenceId()}
+        listDecisionCodeExpressions:
+          - element.getDecisionCode().toString()
+      - key : ComplianceV2FundingDecisionCode
+        expressions:
+          - if(context.get("Compliance") != null && context.get("Compliance").getOutput() != null){context.get("Compliance").getOutput().getDecisions()}
+          - if(context.get("CPLDSRamp") != null && context.get("CPLDSRamp").getOutput() != null){context.get("CPLDSRamp").getOutput().getDecisions()}
+        listIdExpressions:
+          - if(element.getReferenceType().equals('FUNDING_SELECTION')){element.getReferenceId()}
+        listDecisionCodeExpressions:
+          - element.getDecisionCode().toString()
+      - key : LimitsV2FundingDecisionCode
+        expressions:
+          - context.get("Limits").getOutput().getTransactionLimitsDecision().getFundingSelectionDecisions()
+        listIdExpressions:
+          - element.getFundingSelectionId()
+        listDecisionCodeExpressions:
+          - if(element.getDecisionCode().toString().equals("DENY") && element.getFlowRemedyActionDetails().size() > 0){"DECLINE_WITH_REMEDY_ACTION"}
+          - if(element.getDecisionCode().toString().equals("DENY")){"DECLINE"}
+          - if(element.getDecisionCode().toString().equals("ALLOW")){"APPROVE"}
+      - key: SimilityV2FundingDecisionCode
+        expressions:
+          - if(context.get("SimilityResponseTransformer") != null && context.get("SimilityResponseTransformer").getOutput() != null){context.get("SimilityResponseTransformer").getOutput().clone()}
+
+    destinationField:
+      fields :
+        - key : NovaV2FundingDecisionSetter
+          fieldExtractor : com.paypal.risk.gateway.endpoint.nova.v2.consolidator.NovaV2FundingDecisionSetter
+
+    decisionTable:
+      name : nova_v2_funding_dt.yml
+      version : 1
+      typeName : Yaml
+      properties :
+  - name: nova_v2_tokenization_transaction
+    version: 1
+    sourceFields:
+      - key : RiskV2TranDecisionCode
+        expressions:
+          - if(context.get("RuDTS") != null && context.get("RuDTS").getOutput() != null){context.get("RuDTS").getOutput().getDecisions()}
+        listIdExpressions:
+          - if(element.getReferenceType().equals('TRANSACTION')){element.getReferenceId()}
+        listDecisionCodeExpressions:
+          - element.getDecisionCode().toString()
+      - key : ComplianceV2TranDecisionCode
+        expressions:
+          - if(context.get("Compliance") != null && context.get("Compliance").getOutput() != null){context.get("Compliance").getOutput().getDecisions()}
+          - if(context.get("CPLDSRamp") != null && context.get("CPLDSRamp").getOutput() != null){context.get("CPLDSRamp").getOutput().getDecisions()}
+        listIdExpressions:
+          - if(element.getReferenceType().equals('TRANSACTION')){element.getReferenceId()}
+        listDecisionCodeExpressions:
+          - element.getDecisionCode().toString()
+
+    destinationField:
+      fields :
+        - key : NovaV2TokenizationTransactionDecisionSetter
+          fieldExtractor : com.paypal.risk.gateway.endpoint.nova.v2.consolidator.tokenization.NovaV2TokenizationTransactionDecisionSetter
+
+    decisionTable:
+      name : nova_v2_tokenization_transaction_dt.yml
+      version : 1
+      typeName : Yaml
+      properties :
+  - name: nova_v2_tokenization_fundingselection
+    version: 1
+    sourceFields:
+      - key : RiskV2FundingDecisionCode
+        expressions:
+          - if(context.get("RuDTS") != null && context.get("RuDTS").getOutput() != null){context.get("RuDTS").getOutput().getDecisions()}
+        listIdExpressions:
+          - if(element.getReferenceType().equals('FUNDING_SELECTION')){element.getReferenceId()}
+        listDecisionCodeExpressions:
+          - element.getDecisionCode().toString()
+      - key : ComplianceV2FundingDecisionCode
+        expressions:
+          - if(context.get("Compliance") != null && context.get("Compliance").getOutput() != null){context.get("Compliance").getOutput().getDecisions()}
+          - if(context.get("CPLDSRamp") != null && context.get("CPLDSRamp").getOutput() != null){context.get("CPLDSRamp").getOutput().getDecisions()}
+        listIdExpressions:
+          - if(element.getReferenceType().equals('FUNDING_SELECTION')){element.getReferenceId()}
+        listDecisionCodeExpressions:
+          - element.getDecisionCode().toString()
+      - key : LimitsV2FundingDecisionCode
+        expressions:
+          - context.get("Limits").getOutput().getTransactionLimitsDecision().getFundingSelectionDecisions()
+        listIdExpressions:
+          - element.getFundingSelectionId()
+        listDecisionCodeExpressions:
+          - if(element.getDecisionCode().toString().equals("DENY") && element.getFlowRemedyActionDetails().size() > 0){"DECLINE_WITH_REMEDY_ACTION"}
+          - if(element.getDecisionCode().toString().equals("DENY")){"DECLINE"}
+          - if(element.getDecisionCode().toString().equals("ALLOW")){"APPROVE"}
+      - key: SimilityV2FundingDecisionCode
+        expressions:
+          - if(context.get("SimilityResponseTransformer") != null && context.get("SimilityResponseTransformer").getOutput() != null){context.get("SimilityResponseTransformer").getOutput() != null.clone()}
+
+    destinationField:
+      fields :
+        - key : NovaV2TokenizationFundingDecisionSetter
+          fieldExtractor : com.paypal.risk.gateway.endpoint.nova.v2.consolidator.tokenization.NovaV2TokenizationFundingDecisionSetter
+
+    decisionTable:
+      name : nova_v2_tokenization_funding_dt.yml
+      version : 1
+      typeName : Yaml
+      properties :

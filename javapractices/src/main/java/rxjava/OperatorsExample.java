@@ -58,7 +58,7 @@ public class OperatorsExample {
 
         System.out.println("-------------");
         //map
-        //same as in streams, to convert from one form to another
+        //same as in java8.streams, to convert from one form to another
         observable.map(String::toUpperCase)
                 .subscribe(System.out::println);
 

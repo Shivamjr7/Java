@@ -7,7 +7,7 @@ public class AmiguityMultipleArg {
 		
 		
 //		new AmiguityMultipleArg().hello(null, null);
-		// ambiguty issue
+//		 ambiguty issue
 
 	}
 	

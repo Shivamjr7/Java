@@ -2,7 +2,7 @@ package java8;
 
 import java.util.function.Consumer;
 
-public class LambdaLocalVariable {
+public class    LambdaLocalVariable {
 
 
     int instance_var =5;

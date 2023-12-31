@@ -23,6 +23,8 @@ public class FunctionExample {
         System.out.println(function.compose(andThenFunc).apply("shivam"));
 
         String test = function.apply("test");
+
+        System.out.println(Function.identity());
     }
 
 

@@ -1,0 +1,39 @@
+calExpr: '{
+            "endpoint-name": "Nova",
+            "flow-name": .Input.invocation_context.business_application,
+            "corr-id": ."nova.Compliance".response.headers.CORRELATION-ID,
+            "rugs-uuid": ."nova.Compliance".request.headers.RUGS-UUID,
+            "service-data": {
+              "request-data": {
+                "uri": "",
+                "version": "v1",
+                "body": {
+                	"payment_schedule": .Input.transaction_context.product_identifiers.payment_schedule,
+                	"payment_flow": .Input.transaction_context.product_identifiers.payment_flow,
+                	"payment_channel": .Input.transaction_context.product_identifiers.payment_channel
+                }
+              },
+              "response-data": {
+                "status": "",
+                "body": {}
+              }
+            },
+            "downstream-data": {
+              "risk": {
+                "request-data": {
+                  "uri": "",
+                  "version": ""
+                },
+                "response-data": {
+                  "status":."nova.Risk".response.status,
+                  "body": {
+            	      	"unifiedLogging" : getUnifiedLogData(."nova.Risk".response.responseBody,."nova.RiskRaptor".response.responseBody,."nova.StandIn".response.responseBody,."nova.RUPS".response.responseBody,."nova.RUPSSCARamp".response.responseBody)
+                  }
+                }
+              }
+             }
+          }'
+
+
+  signalFxExpr:{
+  }
